@@ -83,6 +83,12 @@ class _DetailRepo:
     def get_minute_range(self, symbols, start, end, asset_type="stock") -> pl.DataFrame:
         return self.minute
 
+    def get_instruments_asset(self, asset_type: str) -> pl.DataFrame:
+        return self.get_instruments() if asset_type == "stock" else pl.DataFrame()
+
+    def get_historical_shares(self) -> pl.DataFrame:
+        return pl.DataFrame()
+
 
 class _IndexRepo:
     def get_index_instruments(self) -> pl.DataFrame:

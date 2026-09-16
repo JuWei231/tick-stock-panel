@@ -1,0 +1,25 @@
+# 通达信行情主站内置可选数据源插件
+#
+# 通过通达信行情主站的二进制协议直连取数(日K/分钟K/除权除息/实时快照含五档)。
+# 协议为社区反向工程成果, 主站属第三方服务, 使用前请自行评估合规责任。
+#
+# 特点:
+#   - 零第三方依赖(pure python, 不依赖 pytdx/mootdx)
+#   - 无需 API Key
+#   - 主站池自动切换: 实测约 18 个可连主站里仅 1 个真正提供行情, 且会失效
+#
+# financial: 只提供 shares(逐日股本, 由股本变迁事件还原); 三大报表通达信没有, 返回空表。
+# 股本取数本地优先: 装在本机的通达信 T0002/hq_cache/gbbq 已是同一份事件数据, 解密后
+# 一次覆盖全市场(含在线拿不到的北交所), 未覆盖的标的才走主站; 文件缺失/损坏/过期时
+# 整体回退在线。非默认安装路径可用环境变量 TDX_HOME 指定(详见 gbbq.py)。
+# 未声明 instruments: 通达信本插件的 instruments 返回空(缺名称/上市日/股本维表字段)。
+
+name: tdx
+display_name: "通达信"
+runtime: none
+entry: app.plugins.tdx.provider:TdxProvider
+check: app.plugins.tdx.provider:availability
+datasets: [daily, adj_factor, minute, full_minute, realtime, depth5, financial]
+description: "通达信行情主站直连: 日K(可回溯至 2003 年, 不复权原始价)、1/5 分钟K(1 分钟约 27 个交易日)、除权因子(由除权除息事件推导)、全市场实时快照含五档(实测全市场约 3.3s/轮)、财务仅股本表(优先读本机客户端的 gbbq, 离线且含北交所; 无本地文件时走主站)。主站为第三方服务且会失效, 已内置主站池与自动切换; 协议为反向工程成果, 使用需自行评估合规责任。金额字段走主站压缩浮点编码, 存在约 1e-8 量级相对精度损失。"
+install_hint: "无需安装依赖或配置 Key。若提示无可用主站, 可在设置页点击「试拉」重新探测主站池。"
+homepage: "https://www.tdx.com.cn"

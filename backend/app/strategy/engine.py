@@ -1277,6 +1277,8 @@ class StrategyEngine:
                 or basic_filter.get(f"{prefix}_max") is not None
             ):
                 fields.add(field_name)
+                if prefix in ("market_cap", "float_cap"):
+                    fields.add("raw_close")
         scoring = effective_scoring(strategy.meta.get("scoring"), overrides)
         fields.update(scoring_dependencies(scoring))
         order_by = strategy.meta.get("order_by")
@@ -1566,23 +1568,30 @@ class StrategyEngine:
             exprs.append(pl.col("close") >= bf["price_min"])
         if bf.get("price_max") is not None:
             exprs.append(pl.col("close") <= bf["price_max"])
-        if bf.get("market_cap_min") is not None and "total_shares" in df.columns:
-            exprs.append(
-                pl.col("close") * pl.col("total_shares") >= bf["market_cap_min"]
-            )
-        if bf.get("market_cap_max") is not None and "total_shares" in df.columns:
-            exprs.append(
-                pl.col("close") * pl.col("total_shares") <= bf["market_cap_max"]
-            )
-        # 流通市值
-        if bf.get("float_cap_min") is not None and "float_shares" in df.columns:
-            exprs.append(
-                pl.col("close") * pl.col("float_shares") >= bf["float_cap_min"]
-            )
-        if bf.get("float_cap_max") is not None and "float_shares" in df.columns:
-            exprs.append(
-                pl.col("close") * pl.col("float_shares") <= bf["float_cap_max"]
-            )
+        from app.share_capital import market_cap_expr, warn_market_cap_unavailable
+
+        total_cap = market_cap_expr(df, "total_shares")
+        if total_cap is None and (
+            bf.get("market_cap_min") is not None or bf.get("market_cap_max") is not None
+        ):
+            # 配了市值约束却拿不到股本列: 不静默丢弃, 显式告警(ETF 走不到这里, 见
+            # backtest._basic_filter_for_asset 会先中和非股票资产的市值项)。
+            warn_market_cap_unavailable("strategy.basic_filter", "total_shares")
+        if total_cap is not None:
+            if bf.get("market_cap_min") is not None:
+                exprs.append(total_cap >= bf["market_cap_min"])
+            if bf.get("market_cap_max") is not None:
+                exprs.append(total_cap <= bf["market_cap_max"])
+        float_cap = market_cap_expr(df, "float_shares")
+        if float_cap is None and (
+            bf.get("float_cap_min") is not None or bf.get("float_cap_max") is not None
+        ):
+            warn_market_cap_unavailable("strategy.basic_filter", "float_shares")
+        if float_cap is not None:
+            if bf.get("float_cap_min") is not None:
+                exprs.append(float_cap >= bf["float_cap_min"])
+            if bf.get("float_cap_max") is not None:
+                exprs.append(float_cap <= bf["float_cap_max"])
         if bf.get("amount_min") is not None:
             exprs.append(pl.col("amount") >= bf["amount_min"])
         if bf.get("amount_max") is not None:
@@ -1632,7 +1641,7 @@ class StrategyEngine:
     # 分钟策略命中行需要从事后联表补齐的 enriched 列: 基础过滤引用 + 前端展示。
     # close 不在列 — 分钟策略输出的 close 是最后一根分钟K收盘价, 优先于日线快照。
     MINUTE_JOIN_COLUMNS: tuple[str, ...] = (
-        "name", "total_shares", "float_shares", "amount",
+        "name", "total_shares", "float_shares", "raw_close", "amount",
         "turnover_rate", "change_pct", "pre_close",
     )
 

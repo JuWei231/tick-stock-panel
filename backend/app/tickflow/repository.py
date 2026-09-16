@@ -625,6 +625,13 @@ class KlineRepository:
                     logger.info("enriched refresh step done: compute window rows=%d (%.2fs)",
                                 len(df_full), time.perf_counter() - step)
 
+                    from app.share_capital import apply_historical_shares
+                    # 这份缓存供选股/回测直接算市值 (raw_close x 股本), 股本必须是当日值。
+                    df_full = apply_historical_shares(
+                        df_full, self.get_historical_shares(), today=cn_today(),
+                        derive_snapshot_fallback=True,
+                    )
+
                     # 缓存完整历史 (含指标+必要基础信息) 供 filter_history/backtest 直接复用
                     if self.get_matrix_data_generation("stock") != refresh_generation:
                         raise EnrichedGenerationUnavailableError(

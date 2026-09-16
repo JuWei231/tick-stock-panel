@@ -1,0 +1,147 @@
+# a-stock-data HTTP 桥接数据源 (由 a-stock-data/bridge_server.py 提供)
+# 文档: a-stock-data/BRIDGE_FOR_TICK_STOCK_PANEL.md
+# 启动: cd <a-stock-data> && .\.venv\Scripts\python.exe bridge_server.py   (默认 127.0.0.1:3022)
+name: a_stock_data_bridge
+display_name: "a-stock-data 桥接"
+auth:
+  type: none
+
+datasets:
+  # -------- 日K: bridge /daily (百度股市通) --------
+  daily:
+    url: http://127.0.0.1:3022/daily
+    method: POST
+    batch: 100
+    rpm: 300
+    timeout: 60
+    response_path: data
+    field_map:
+      ts_code: symbol
+      trade_date: date
+      open: open
+      high: high
+      low: low
+      close: close
+      vol: volume
+      amt: amount
+    transforms:
+      date: "parse_date(value, '%Y-%m-%d')"
+
+  # -------- 除权因子: bridge /adj_factor (新浪 qfq) --------
+  adj_factor:
+    url: http://127.0.0.1:3022/adj_factor
+    method: POST
+    batch: 100
+    rpm: 300
+    timeout: 60
+    response_path: data
+    field_map:
+      ts_code: symbol
+      trade_date: trade_date
+      factor: ex_factor
+    transforms:
+      trade_date: "parse_date(value, '%Y-%m-%d')"
+
+  # -------- 实时快照: bridge /realtime (腾讯 + 东财全市场) --------
+  # bridge 已把 pct/amplitude/turnover 换算为小数制, 故声明 decimal
+  realtime:
+    url: http://127.0.0.1:3022/realtime
+    method: GET
+    rpm: 30
+    timeout: 180
+    response_path: data
+    pct_unit: decimal
+    field_map:
+      ts_code: symbol
+      name: name
+      last: last_price
+      pre_close: prev_close
+      open: open
+      high: high
+      low: low
+      vol: volume
+      amt: amount
+      pct: change_pct
+      amount_change: change_amount
+      amplitude: amplitude
+      turnover: turnover_rate
+      timestamp: timestamp
+      session: session
+
+  # -------- 分钟K: bridge /minute (mootdx 1m, 北京时间墙钟) --------
+  minute:
+    url: http://127.0.0.1:3022/minute
+    method: POST
+    batch: 100
+    rpm: 300
+    timeout: 180
+    response_path: data
+    field_map:
+      ts_code: symbol
+      dt: datetime
+      open: open
+      high: high
+      low: low
+      close: close
+      vol: volume
+      amt: amount
+    transforms:
+      datetime: "parse_datetime(value, '%Y-%m-%d %H:%M:%S')"
+
+  # -------- 全量分钟(修复轮): bridge /full_minute, 与 minute 同形 --------
+  full_minute:
+    url: http://127.0.0.1:3022/full_minute
+    method: POST
+    batch: 100
+    rpm: 60
+    timeout: 300
+    response_path: data
+    field_map:
+      ts_code: symbol
+      dt: datetime
+      open: open
+      high: high
+      low: low
+      close: close
+      vol: volume
+      amt: amount
+    transforms:
+      datetime: "parse_datetime(value, '%Y-%m-%d %H:%M:%S')"
+
+  # -------- 财务: bridge /financial, 请求时带 table 参数 --------
+  # 仅映射稳定字段(新浪原始中文科目名是动态的, 不做静态映射; 需要时用英文别名字段)
+  financial:
+    url: http://127.0.0.1:3022/financial
+    method: POST
+    batch: 50
+    rpm: 120
+    timeout: 120
+    response_path: data
+    field_map:
+      ts_code: symbol
+      period_end: period_end
+      announce_date: announce_date
+      table: table
+      name: name
+      price: price
+      total_shares: total_shares
+      float_shares: float_shares
+      mcap: mcap
+      float_mcap: float_mcap
+      pe_ttm: pe_ttm
+      pb: pb
+      revenue: revenue
+      net_profit: net_profit
+      net_profit_parent: net_profit_parent
+      net_profit_ex_nonrecurring: net_profit_ex_nonrecurring
+      eps_basic: eps_basic
+      eps_diluted: eps_diluted
+      total_assets: total_assets
+      total_liabilities: total_liabilities
+      equity_parent: equity_parent
+      equity_total: equity_total
+      cash_and_equivalents: cash_and_equivalents
+      net_cash_operating: net_cash_operating
+      net_cash_investing: net_cash_investing
+      net_cash_financing: net_cash_financing
+      net_increase_cash: net_increase_cash

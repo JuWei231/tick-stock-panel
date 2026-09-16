@@ -160,11 +160,17 @@ export function StockInfoBar({
 
   const totalShares = stockInfo?.total_shares
   const floatShares = stockInfo?.float_shares
-  const marketCap = totalShares ? close * totalShares : null
-  const floatMarketCap = floatShares ? close * floatShares : null
-  const turnoverRate = floatShares && latest.volume
-    ? (Number(latest.volume) * 100 / floatShares * 100)
-    : null
+  // 市值口径: 后端按"不复权价 x 当日股本"算好并逐行下发。行内缺失时(如分时行、或后端未注入)
+  // 才退回 "现价 x instruments 快照股本" —— 该回退只在展示当日行情时成立: 历史区间的
+  // close 是前复权价、股本是今天的快照, 两者直接相乘会让含送转标的的市值偏离数倍。
+  const rowMarketCap = latest.market_cap != null ? Number(latest.market_cap) : null
+  const rowFloatMarketCap = latest.float_market_cap != null ? Number(latest.float_market_cap) : null
+  const marketCap = rowMarketCap ?? (totalShares ? close * totalShares : null)
+  const floatMarketCap = rowFloatMarketCap ?? (floatShares ? close * floatShares : null)
+  // 换手率同理: enriched 的 turnover_rate 已按当日流通股本算出(百分数)。
+  const turnoverRate = latest.turnover_rate != null
+    ? Number(latest.turnover_rate)
+    : (floatShares && latest.volume ? (Number(latest.volume) * 100 / floatShares * 100) : null)
 
   const displayName = stockInfo?.name ?? name ?? ''
   const extData = stockInfo?.ext ?? {}

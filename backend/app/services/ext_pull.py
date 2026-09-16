@@ -118,16 +118,15 @@ def _apply_field_map(rows: list[dict], field_map: dict[str, str]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _apply_preset_flatten(config_id: str, rows: list[dict]) -> list[dict]:
-    """对内置预设 (概念/行业) 应用结构转换, 与 fetch_preset 保持一致。
+    """对内置预设 (概念/行业/人气排行/资金流向) 应用结构转换, 与 fetch_preset 保持一致。
 
     延迟导入避免与 ext_presets 形成循环依赖。
     非预设 id 原样返回。
     """
-    if config_id not in ("ext_gn_ths", "ext_hy_ths"):
-        return rows
-    from app.services.ext_presets import _flatten_concept_rows, _flatten_industry_rows
-    flatten = _flatten_concept_rows if config_id == "ext_gn_ths" else _flatten_industry_rows
-    return flatten(rows)
+    from app.services.ext_presets import preset_flatten
+
+    flatten = preset_flatten(config_id)
+    return rows if flatten is None else flatten(rows)
 
 
 def _format_date_value(day: date, date_format: str) -> str:

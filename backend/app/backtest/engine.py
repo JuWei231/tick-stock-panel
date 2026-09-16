@@ -472,6 +472,17 @@ class BacktestEngine:
                     on="symbol",
                     how="left",
                 )
+            if asset_type == "stock" and self.repo is not None:
+                # instruments 股本是最新快照, 历史行需按公告日还原; 没有股本表时
+                # 退化为"快照 x close/raw_close"的推定当日股本。两者都不能停留在快照,
+                # 否则 raw_close * total_shares 会把历史市值系统性高估。
+                from app.market_time import cn_today
+                from app.share_capital import apply_historical_shares
+
+                df = apply_historical_shares(
+                    df, self.repo.get_historical_shares(), today=cn_today(),
+                    derive_snapshot_fallback=True,
+                )
 
         required_columns = set(feature_plan.base_columns) | set(feature_plan.instrument_columns)
         required_columns |= set(feature_plan.signal_columns)
@@ -560,6 +571,17 @@ class BacktestEngine:
                     cancel_event=cancel_event,
                 )
                 self.assert_data_generation(asset_type, source_generation)
+                if asset_type == "stock":
+                    # 股本在矩阵里本是每标的一个 instruments 快照标量, 用它算历史
+                    # 市值是未来函数; 股本表同步到位后提升为按公告日生效的逐日矩阵。
+                    from app.market_time import cn_today
+                    from app.share_capital import attach_matrix_historical_shares
+
+                    market = attach_matrix_historical_shares(
+                        market,
+                        self.repo.store.data_dir if self.repo is not None else None,
+                        today=cn_today(),
+                    )
                 from app.backtest.fundamentals import attach_matrix_fundamental_fields
 
                 fundamental_names = sorted(

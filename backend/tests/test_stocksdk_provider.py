@@ -217,20 +217,30 @@ def test_plugin_discovered_in_loader():
 
 
 def test_plugin_registered_when_available(monkeypatch):
-    """依赖可用时, 插件注册进 _PROVIDERS 并可路由。"""
+    """依赖可用时, 插件注册进 _PROVIDERS 并可路由。
+
+    注意: _load_builtin_plugins() 重建的是**全局** _PLUGIN_STATUS/_PROVIDERS。
+    这里把 patch 限制在 context 内, 并在退出后立刻无 patch 重建一次 —— 否则
+    该次扫描的结果(其它插件因 _load_entry 被替换而解析失败)会一直留在全局
+    状态里, 让后续任何断言插件可用性的测试看到被人为污染的"不可用"。
+    """
     from app.data_providers import custom as cs
     from app.data_providers.custom import loader
 
-    # mock availability 返回 (True, "ok")
-    monkeypatch.setattr(loader, "_call_check", lambda ref: (True, "ok"))
-    monkeypatch.setattr(loader, "_load_entry", _load_stocksdk_entry)
-    loader._load_builtin_plugins()
+    with monkeypatch.context() as m:
+        # mock availability 返回 (True, "ok")
+        m.setattr(loader, "_call_check", lambda ref: (True, "ok"))
+        m.setattr(loader, "_load_entry", _load_stocksdk_entry)
+        loader._load_builtin_plugins()
 
-    assert "stocksdk" in cs.names()
-    assert cs.is_custom_provider("stocksdk")
-    assert cs.provider_has_dataset("stocksdk", "daily")
-    assert cs.provider_has_dataset("stocksdk", "realtime")
-    assert not cs.provider_has_dataset("stocksdk", "financial")
+        assert "stocksdk" in cs.names()
+        assert cs.is_custom_provider("stocksdk")
+        assert cs.provider_has_dataset("stocksdk", "daily")
+        assert cs.provider_has_dataset("stocksdk", "realtime")
+        assert not cs.provider_has_dataset("stocksdk", "financial")
+
+    # 还原全局插件状态, 避免测试间污染
+    loader._load_builtin_plugins()
 
 
 def _load_stocksdk_entry(entry_ref: str):

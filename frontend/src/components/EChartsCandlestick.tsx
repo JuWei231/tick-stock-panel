@@ -11,6 +11,14 @@ export interface OHLC {
   low: number
   close: number
   volume?: number
+  /** 不复权原始收盘价 (口径: 市值/涨跌停价必须用它, close 是前复权价) */
+  raw_close?: number | null
+  /** 换手率百分数 (enriched 存储列, 已按当日流通股本计算) */
+  turnover_rate?: number | null
+  /** 总市值(元) = 不复权价 x 当日总股本, 由后端按公告日口径算好 */
+  market_cap?: number | null
+  /** 流通市值(元) */
+  float_market_cap?: number | null
   ma5?: number | null
   ma10?: number | null
   ma20?: number | null
@@ -915,7 +923,11 @@ export function EChartsCandlestick({
     const isUp = chg >= 0
     const clr = isUp ? THEME.bull : THEME.bear
     const floatShares = stockInfo?.float_shares
-    const turnoverRate = floatShares && d.volume ? (d.volume * 100 / floatShares * 100) : null
+    // 优先用行内的换手率(后端按当日流通股本算好); 只有分时等缺该列的行才用快照股本反推。
+    // 历史日线行用快照股本会系统性偏低, 所以这个回退不能覆盖日线行。
+    const turnoverRate = d.turnover_rate != null
+      ? Number(d.turnover_rate)
+      : (floatShares && d.volume ? (d.volume * 100 / floatShares * 100) : null)
 
     let html = `<div style="display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;select:none;min-height:20px;flex-wrap:wrap">`
     html += `<span style="color:${CT().text}">${d.date}</span>`
@@ -1203,7 +1215,11 @@ export function EChartsCandlestick({
     const d = idx >= 0 && idx < data.length ? data[idx] : null
     if (!d) return ''
     const floatShares = stockInfo?.float_shares
-    const turnoverRate = floatShares && d.volume ? (d.volume * 100 / floatShares * 100) : null
+    // 优先用行内的换手率(后端按当日流通股本算好); 只有分时等缺该列的行才用快照股本反推。
+    // 历史日线行用快照股本会系统性偏低, 所以这个回退不能覆盖日线行。
+    const turnoverRate = d.turnover_rate != null
+      ? Number(d.turnover_rate)
+      : (floatShares && d.volume ? (d.volume * 100 / floatShares * 100) : null)
     let html = `<div style="display:flex;align-items:center;gap:6px;padding:0 8px;font:11px 'JetBrains Mono',monospace;min-height:20px;flex-wrap:wrap">`
     html += `<span style="color:${CT().text}">${d.date}</span>`
     html += `<span style="color:${CT().text}">开</span>`

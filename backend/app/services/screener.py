@@ -15,7 +15,9 @@ from pathlib import Path
 
 import polars as pl
 
+from app.market_time import cn_today
 from app.parquet import scan_enriched_parquet
+from app.share_capital import apply_historical_shares
 from app.tickflow.repository import KlineRepository
 
 logger = logging.getLogger(__name__)
@@ -251,6 +253,12 @@ class ScreenerService:
             inst_cols = [c for c in ["symbol", "name", "total_shares", "float_shares"] if c in instruments.columns]
             if "name" not in df_result.columns:
                 df_result = df_result.join(instruments.select(inst_cols), on="symbol", how="left")
+            # 市值口径: market_cap_expr 用不复权 raw_close, 股本必须是当日股本,
+            # 否则含送转标的历史市值被系统性高估。
+            df_result = apply_historical_shares(
+                df_result, self.repo.get_historical_shares(), today=cn_today(),
+                derive_snapshot_fallback=True,
+            )
 
         return df_result
 
@@ -334,6 +342,10 @@ class ScreenerService:
             inst_cols = [c for c in ["symbol", "name", "total_shares", "float_shares"] if c in instruments.columns]
             if "name" not in df_full.columns:
                 df_full = df_full.join(instruments.select(inst_cols), on="symbol", how="left")
+            df_full = apply_historical_shares(
+                df_full, self.repo.get_historical_shares(), today=cn_today(),
+                derive_snapshot_fallback=True,
+            )
 
         # 裁剪掉 warmup 部分, 只保留 lookback 范围 (减少 group_by 开销)。
         # 按交易日计数: 从数据里实际存在的交易日序列取最后 lookback_days 个交易日,
