@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import logging
 import sys
+import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -92,6 +93,14 @@ async def _application_lifespan(app: FastAPI):
         "Tick Stock Panel v%s starting (mode=%s)",
         __version__, tf_client.current_mode(),
     )
+    # 启动阶段计时: 这段链路整体可达分钟级 (冷页缓存/杀软扫描下的全量 parquet I/O),
+    # 但原先只有各步骤自己的零散日志, 慢的时候无法定位到具体阶段。结束时汇总一行,
+    # 让"启动慢"能直接读出瓶颈阶段。
+    _boot_started = time.perf_counter()
+    _boot_steps: list[tuple[str, float]] = []
+
+    def _boot_step(name: str, started: float) -> None:
+        _boot_steps.append((name, time.perf_counter() - started))
 
     # 首次启动: 若配置了 AUTH_PASSWORD 环境变量且未设过密码, 用它初始化。
     # 公网部署免 SSH 端口转发; 已设过密码则不覆盖 (改密码走 UI)。
@@ -102,8 +111,10 @@ async def _application_lifespan(app: FastAPI):
         logger.warning("auth bootstrap failed: %s", e)
 
     # 数据层
+    _step_started = time.perf_counter()
     store = DataStore()
     repo = KlineRepository(store)
+    _boot_step("datastore", _step_started)
     app.state.datastore = store
     app.state.repo = repo
     # 自定义/复合因子载入注册表 (P3); 单个失败只跳过该因子 (fail-隔离)
@@ -134,20 +145,26 @@ async def _application_lifespan(app: FastAPI):
 
     # Polars 缓存预热 — enriched 的重计算 (107万行 compute_indicators) 推后台,
     # instruments/index/ETF 仍同步 (毫秒级)。应用立即 ready, 指标算完后自动替换。
+    _step_started = time.perf_counter()
     repo.refresh_cache(background=True)
+    _boot_step("refresh_cache", _step_started)
 
     # 自定义数据源配置(可选): 失败只记录错误, 不影响 TickFlow 基准路径。
+    _step_started = time.perf_counter()
     try:
         from app.data_providers import custom as custom_sources
         custom_sources.load_all()
         logger.info("custom data sources loaded: %d", len(custom_sources.list_sources()))
     except Exception as e:  # noqa: BLE001
         logger.warning("custom data sources init failed: %s", e)
+    _boot_step("custom_sources", _step_started)
 
     # 自定义源必须先注册,能力探测才能补充其数据集能力。
     capset = detect_capabilities()
     app.state.capabilities = capset
-    logger.info("ready; %d capabilities active", len(capset.all()))
+    # 注: 此处还不是"可服务"状态 —— lifespan 要跑完全部初始化才 yield, uvicorn 之后
+    # 才开始处理请求。可服务信号在下面的 "ready: 开始接受请求"。
+    logger.info("capabilities ready; %d active (还在完成启动)", len(capset.all()))
 
     # 全局行情服务
     qs = QuoteService()
@@ -221,6 +238,7 @@ async def _application_lifespan(app: FastAPI):
     # 内置扩展表 (概念/行业): 先创建 config (含拉取配置), 默认开启定时拉取。
     # 必须在 pull_scheduler.refresh() 之前执行, 否则全新部署时 scheduler 读不到
     # 刚创建的预设, 定时任务不会启动。
+    _step_started = time.perf_counter()
     try:
         from app.services.ext_presets import ensure_builtin_presets
         await ensure_builtin_presets(store.data_dir)
@@ -238,12 +256,14 @@ async def _application_lifespan(app: FastAPI):
     from app.services.financial_sync import financial_scheduler
     financial_scheduler.start(store.data_dir, capset)
     app.state.financial_scheduler = financial_scheduler
+    _boot_step("schedulers", _step_started)
 
     # 自愈看门狗: 探测 polars 闸与写锁, 僵死时退出交由 supervisor 拉起 (兜底层)。
     from app.watchdog import start_watchdog
     app.state.watchdog = start_watchdog(app.state, repo)
 
     # 策略引擎
+    _step_started = time.perf_counter()
     from app.strategy.engine import StrategyEngine
     from app.strategy import config as strategy_config
     from app.strategy.monitor import StrategyMonitorService
@@ -262,6 +282,7 @@ async def _application_lifespan(app: FastAPI):
         override_loader=lambda sid: strategy_config.load_override(store.data_dir, sid),
     )
     app.state.strategy_engine = strategy_engine
+    _boot_step("strategy_engine", _step_started)
     logger.info("strategy engine loaded: %d strategies", len(strategy_engine.list_strategies()))
 
     matrix_prewarm_owner = MatrixCachePrewarmOwner()
@@ -351,9 +372,18 @@ async def _application_lifespan(app: FastAPI):
 
     # 源码内二次开发启动钩子: 仅暴露稳定只读上下文, 单个扩展失败不影响核心启动。
     extension_registry = app.state.extension_registry
+    _step_started = time.perf_counter()
     start_backend_extensions(
         current_extension_context(data_dir=store.data_dir, repository=repo),
         extension_registry,
+    )
+    _boot_step("extensions", _step_started)
+
+    _boot_total = time.perf_counter() - _boot_started
+    _boot_detail = ", ".join(f"{name}={elapsed:.2f}s" for name, elapsed in _boot_steps)
+    logger.info(
+        "ready: 开始接受请求 (启动耗时 %.2fs; %s)",
+        _boot_total, _boot_detail,
     )
 
     try:

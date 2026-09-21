@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 import threading
 import time
@@ -72,6 +73,49 @@ def enriched_dirname(asset_type: str) -> str:
     return "kline_etf_enriched" if asset_type == "etf" else "kline_daily_enriched"
 
 
+# enriched 按 date=YYYY-MM-DD 的 Hive 分区落盘 (历史遗留的 symbol= 分区为并集兼容)。
+_DATE_PARTITION_RE = re.compile(r"date=(\d{4}-\d{2}-\d{2})$")
+
+# 语句里 FROM / JOIN 之后引用的表名, 供惰性视图解析判断该建哪张视图。
+_TABLE_REF_RE = re.compile(r"\b(?:from|join)\s+([A-Za-z_][A-Za-z0-9_]*)", re.IGNORECASE)
+
+# 需要先确认 backing 源视图存在才能登记的 unified 视图 (全资产合并读模型)。
+_UNIFIED_VIEW_NAMES = frozenset(
+    {"kline_daily_all", "kline_enriched_all", "kline_minute_all", "instruments_all"}
+)
+
+
+def enriched_files_since(enriched_dir: Path, start: date) -> list[str]:
+    """列出 date >= start 的 enriched 分区文件, 供 Polars 定点读取。
+
+    启动预热与盘中窗口都只关心最近一段历史, 但 `**/*.parquet` 会让 Polars 枚举
+    全部日期分区 (本项目 3337 个文件 / 625MB), 冷页缓存下这一步可达数十秒。
+    这里按分区目录名裁剪, 只返回需要的文件。
+
+    遇到任何非 `date=` 命名的目录 (历史 symbol= 分区等) 或解析不出日期的分区时
+    返回空列表, 由调用方回退到全量 glob —— 宁可慢也不能漏读数据。
+    """
+    try:
+        entries = [p for p in enriched_dir.iterdir() if p.is_dir()]
+    except OSError:
+        return []
+    if not entries:
+        return []
+    files: list[str] = []
+    for entry in entries:
+        match = _DATE_PARTITION_RE.search(entry.name)
+        if match is None:
+            return []  # 布局不确定: 交给调用方回退全量 glob
+        try:
+            partition_date = date.fromisoformat(match.group(1))
+        except ValueError:
+            return []
+        if partition_date < start:
+            continue
+        files.extend(str(p) for p in entry.glob("*.parquet"))
+    return files
+
+
 # 盘中递推状态的最长窗口 (交易日): MA60 部分和 tail(59)、60 日动量 tail(60)
 _LIVE_AGG_WINDOW_BARS = 60
 
@@ -97,6 +141,92 @@ def _last_available_rows(df: pl.DataFrame, cutoff: date) -> pl.DataFrame:
         .group_by("symbol", maintain_order=True)
         .last()
     )
+
+
+def _is_missing_view_error(exc: BaseException) -> bool:
+    """判断异常是否为「引用的视图/表还不存在」(供惰性建视图重试)。"""
+    if not isinstance(exc, duckdb.Error):
+        return False
+    if "Catalog" in type(exc).__name__:
+        return True
+    message = str(exc).lower()
+    return "does not exist" in message or "not found" in message
+
+
+class _LazyViewConnection:
+    """惰性建视图的 DuckDB 连接代理。
+
+    背景: 原先 DataStore 启动时对 20+ 张 parquet 视图逐个 `CREATE VIEW`。DuckDB 建
+    视图要 glob 数据目录并推断 schema (本项目 kline_daily / kline_daily_enriched 各
+    3337 个文件), 热态约 3s, 冷页缓存 + 杀软扫描下可达数十秒, 且全部落在应用可服务
+    之前的启动关键路径上。
+
+    改为: 启动只登记视图定义, 首次有查询真正引用某视图时再建, 并重试一次消化那次
+    "视图不存在" 的报错。建视图失败(空目录)时与改动前一致地报同样的 CatalogException。
+    """
+
+    def __init__(
+        self, connection: duckdb.DuckDBPyConnection, ensure: Callable[[str], bool]
+    ) -> None:
+        object.__setattr__(self, "_connection", connection)
+        object.__setattr__(self, "_ensure", ensure)
+
+    def _execute(self, statement, parameters=None, *, retry: bool, target=None):
+        # target 为具体游标时必须在游标上执行: repo.execute_all/execute_one 依赖
+        # `cursor.close()` 释放结果集 (Windows 下未释放会钉住 parquet 句柄,
+        # 阻塞后续 os.replace —— 见 tests/test_atomic_write_retry.py)。
+        executor = target if target is not None else self._connection
+        try:
+            if parameters is None:
+                return executor.execute(statement)
+            return executor.execute(statement, parameters)
+        except Exception as exc:  # noqa: BLE001
+            if retry and _is_missing_view_error(exc) and self._ensure(statement):
+                if parameters is None:
+                    return executor.execute(statement)
+                return executor.execute(statement, parameters)
+            raise
+
+    def execute(self, statement, parameters=None):
+        return self._execute(statement, parameters, retry=True)
+
+    def query(self, statement, parameters=None):
+        return self._execute(statement, parameters, retry=True)
+
+    def cursor(self):
+        # 游标上的 execute 同样要能触发按需建视图 (repo.execute_all/execute_one 走这里)
+        real_cursor = self._connection.cursor()
+        return _LazyViewCursor(
+            real_cursor,
+            lambda statement, parameters=None: self._execute(
+                statement, parameters, retry=True, target=real_cursor
+            ),
+        )
+
+    def close(self):
+        return self._connection.close()
+
+    def __getattr__(self, name):
+        return getattr(self._connection, name)
+
+
+class _LazyViewCursor:
+    """游标代理: 把 execute 转给绑定了该游标的重试逻辑。"""
+
+    def __init__(self, cursor: duckdb.DuckDBPyConnection, execute: Callable) -> None:
+        object.__setattr__(self, "_cursor", cursor)
+        object.__setattr__(self, "_execute", execute)
+
+    def execute(self, statement, parameters=None):
+        if parameters is None:
+            return self._execute(statement)
+        return self._execute(statement, parameters)
+
+    def close(self):
+        return self._cursor.close()
+
+    def __getattr__(self, name):
+        return getattr(self._cursor, name)
 
 
 class DataStore:
@@ -142,7 +272,13 @@ class DataStore:
             (self.data_dir / "financials" / sub).mkdir(parents=True, exist_ok=True)
 
         # DuckDB 内存模式 — 不建 .db 文件(§7.1)
-        self.db = duckdb.connect(database=":memory:")
+        self._connection = duckdb.connect(database=":memory:")
+        self._view_sql: dict[str, str] = {}
+        self._view_lock = threading.Lock()
+        # unified 视图 (全资产合并读模型) 的定义要先确认源视图存在, 按需现算
+        self._unified_views_dirty = True
+        # 查询侧走代理, 首次引用某视图时才真正 CREATE
+        self.db = _LazyViewConnection(self._connection, self._ensure_view)
         self._register_views()
 
     def _migrate_legacy_data_dir(self) -> None:
@@ -204,129 +340,172 @@ class DataStore:
             logger.warning("legacy data migration failed (startup continues): %s", e)
 
     def _register_views(self) -> None:
-        """把 Parquet 目录挂载为 DuckDB 视图(§7.3)。"""
+        """登记 Parquet 目录 → DuckDB 视图的定义(§7.3), 不立即建视图。
+
+        建视图会 glob 数据目录并推断 schema, 是启动期最重的一步; 登记后由
+        `_LazyViewConnection` 在首次被查询引用时按需 CREATE, 见该类说明。
+        """
+        with self._view_lock:
+            self._view_sql = {
+                name: self._view_statement(name, path)
+                for name, path in self.view_paths().items()
+            }
+
+    def view_paths(self) -> dict[str, str]:
+        """视图名 → parquet 路径 glob。视图定义的唯一权威来源。"""
         d = self.data_dir.as_posix()
-        statements = [
-            f"""CREATE OR REPLACE VIEW kline_daily AS
-                SELECT * FROM read_parquet('{d}/kline_daily/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_enriched AS
-                SELECT * FROM read_parquet('{d}/kline_daily_enriched/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_index_daily AS
-                SELECT * FROM read_parquet('{d}/kline_index_daily/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_index_enriched AS
-                SELECT * FROM read_parquet('{d}/kline_index_enriched/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_etf_daily AS
-                SELECT * FROM read_parquet('{d}/kline_etf_daily/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_etf_enriched AS
-                SELECT * FROM read_parquet('{d}/kline_etf_enriched/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_etf_minute AS
-                SELECT * FROM read_parquet('{d}/kline_etf_minute/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_minute AS
-                SELECT * FROM read_parquet('{d}/kline_minute/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW adj_factor AS
-                SELECT * FROM read_parquet('{d}/adj_factor/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW adj_factor_etf AS
-                SELECT * FROM read_parquet('{d}/adj_factor_etf/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW instruments AS
-                SELECT * FROM read_parquet('{d}/instruments/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW instruments_index AS
-                SELECT * FROM read_parquet('{d}/instruments_index/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW instruments_etf AS
-                SELECT * FROM read_parquet('{d}/instruments_etf/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW instruments_ext AS
-                SELECT * FROM read_parquet('{d}/instruments_ext/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_ext AS
-                SELECT * FROM read_parquet('{d}/kline_ext/**/*.parquet', union_by_name=true)""",
+        return {
+            "kline_daily": f"{d}/kline_daily/**/*.parquet",
+            "kline_enriched": f"{d}/kline_daily_enriched/**/*.parquet",
+            "kline_index_daily": f"{d}/kline_index_daily/**/*.parquet",
+            "kline_index_enriched": f"{d}/kline_index_enriched/**/*.parquet",
+            "kline_etf_daily": f"{d}/kline_etf_daily/**/*.parquet",
+            "kline_etf_enriched": f"{d}/kline_etf_enriched/**/*.parquet",
+            "kline_etf_minute": f"{d}/kline_etf_minute/**/*.parquet",
+            "kline_minute": f"{d}/kline_minute/**/*.parquet",
+            "adj_factor": f"{d}/adj_factor/**/*.parquet",
+            "adj_factor_etf": f"{d}/adj_factor_etf/**/*.parquet",
+            "instruments": f"{d}/instruments/**/*.parquet",
+            "instruments_index": f"{d}/instruments_index/**/*.parquet",
+            "instruments_etf": f"{d}/instruments_etf/**/*.parquet",
+            "instruments_ext": f"{d}/instruments_ext/**/*.parquet",
+            "kline_ext": f"{d}/kline_ext/**/*.parquet",
             # 财务数据视图
-            f"""CREATE OR REPLACE VIEW financials_metrics AS
-                SELECT * FROM read_parquet('{d}/financials/metrics/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW financials_income AS
-                SELECT * FROM read_parquet('{d}/financials/income/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW financials_balance_sheet AS
-                SELECT * FROM read_parquet('{d}/financials/balance_sheet/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW financials_cash_flow AS
-                SELECT * FROM read_parquet('{d}/financials/cash_flow/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW financials_shares AS
-                SELECT * FROM read_parquet('{d}/financials/shares/*.parquet', union_by_name=true)""",
+            "financials_metrics": f"{d}/financials/metrics/*.parquet",
+            "financials_income": f"{d}/financials/income/*.parquet",
+            "financials_balance_sheet": f"{d}/financials/balance_sheet/*.parquet",
+            "financials_cash_flow": f"{d}/financials/cash_flow/*.parquet",
+            "financials_shares": f"{d}/financials/shares/*.parquet",
             # 五档盘口 sealed 真假涨停(独立旁路存储,不进 enriched)
-            f"""CREATE OR REPLACE VIEW depth5 AS
-                SELECT * FROM read_parquet('{d}/depth5/**/*.parquet', union_by_name=true)""",
-        ]
-        for sql in statements:
+            "depth5": f"{d}/depth5/**/*.parquet",
+        }
+
+    @staticmethod
+    def _view_statement(name: str, path: str) -> str:
+        return (
+            f"CREATE OR REPLACE VIEW {name} AS "
+            f"SELECT * FROM read_parquet('{path}', union_by_name=true)"
+        )
+
+    def _ensure_view(self, statement: str) -> bool:
+        """供惰性连接代理调用: statement 引用的视图若已登记且尚未建, 现在建它。
+
+        unified 视图的定义要先确认各源视图是否已建, 属于最贵的登记步骤; 只有语句
+        真的引用它时才现算 (当前仓库内没有查询引用 *_all, 这份开销不发生)。
+        不做备份/丢弃式状态变更: 建视图是幂等的 CREATE OR REPLACE。
+        """
+        referenced = set(_TABLE_REF_RE.findall(statement))
+        if referenced & _UNIFIED_VIEW_NAMES and self._unified_views_dirty:
+            self._unified_views_dirty = False
+            self._register_unified_views()
+        with self._view_lock:
+            pending = {name: sql for name, sql in self._view_sql.items() if name in referenced}
+        if not pending:
+            return False
+        created = False
+        for name, sql in pending.items():
             try:
-                self.db.execute(sql)
+                self._connection.execute(sql)
             except Exception as e:  # noqa: BLE001
                 # 空数据目录(首次启动)或权限问题时 DuckDB 会抛 IOException;
                 # 跨版本/平台也可能抛 CatalogException 等。空目录缺视图不影响启动
                 # (后续同步写入数据后会重新刷新视图),这里一律降级为 debug 日志。
-                logger.debug("view registration skipped (no parquet yet): %s", sql[:60])
+                logger.debug("view creation skipped (no parquet yet): %s: %s", name, e)
+                continue
+            created = True
+        return created
+
+    def refresh_view(self, name: str, path: str) -> None:
+        """重建单张视图并更新登记表 (数据写入后刷新用)。"""
+        sql = self._view_statement(name, path)
+        with self._view_lock:
+            self._view_sql[name] = sql
+        self._connection.execute(sql)
+
+    def _existing_relation_names(self) -> set[str]:
+        """当前 DuckDB 里已有的表/视图名 (一次系统表查询, 不碰文件系统)。"""
+        try:
+            rows = self._connection.execute(
+                "select table_name from information_schema.tables where table_schema = 'main'"
+            ).fetchall()
+        except Exception as e:  # noqa: BLE001
+            logger.debug("relation list failed: %s", e)
+            return set()
+        return {str(row[0]) for row in rows}
+
+    def _refresh_unified_views(self) -> None:
+        """数据写入/清库后强制重挂 unified 视图 (绕过 dirty 判定)。"""
+        self._unified_views_dirty = False
         self._register_unified_views()
 
-    def _has_parquet(self, subdir: str) -> bool:
-        return any((self.data_dir / subdir).rglob("*.parquet"))
-
     def _register_unified_views(self) -> None:
-        """Register optional all-asset views when their backing parquet exists.
+        """Register optional all-asset views when their backing data view exists.
 
         Physical storage remains split for performance and compatibility. These
         views are convenience read models for new APIs/features.
+
+        判据用「DuckDB 里对应视图是否已建」而不是「磁盘目录下有没有 parquet」:
+        后者要递归扫数据目录 (kline_daily_enriched 有 3337 个文件), 在启动路径上
+        代价不可接受。缺数据的源视图建不出来, 自然不会并进来, 与旧行为等价。
         """
+        existing = self._existing_relation_names()
+
         daily_parts: list[str] = []
         enriched_parts: list[str] = []
         minute_parts: list[str] = []
         inst_parts: list[str] = []
 
-        if self._has_parquet("kline_daily"):
+        if "kline_daily" in existing:
             daily_parts.append("""
                 SELECT symbol, date, open, high, low, close, volume, amount,
                        'stock' AS asset_type, 'tickflow' AS source
                 FROM kline_daily
             """)
-        if self._has_parquet("kline_index_daily"):
+        if "kline_index_daily" in existing:
             daily_parts.append("""
                 SELECT symbol, date, open, high, low, close, volume, amount,
                        'index' AS asset_type, 'tickflow' AS source
                 FROM kline_index_daily
             """)
-        if self._has_parquet("kline_etf_daily"):
+        if "kline_etf_daily" in existing:
             daily_parts.append("""
                 SELECT symbol, date, open, high, low, close, volume, amount,
                        'etf' AS asset_type, 'tickflow' AS source
                 FROM kline_etf_daily
             """)
 
-        if self._has_parquet("kline_daily_enriched"):
+        if "kline_enriched" in existing:
             enriched_parts.append("SELECT *, 'stock' AS asset_type, 'tickflow' AS source FROM kline_enriched")
-        if self._has_parquet("kline_index_enriched"):
+        if "kline_index_enriched" in existing:
             enriched_parts.append("SELECT *, 'index' AS asset_type, 'tickflow' AS source FROM kline_index_enriched")
-        if self._has_parquet("kline_etf_enriched"):
+        if "kline_etf_enriched" in existing:
             enriched_parts.append("SELECT *, 'etf' AS asset_type, 'tickflow' AS source FROM kline_etf_enriched")
 
-        if self._has_parquet("kline_minute"):
+        if "kline_minute" in existing:
             minute_parts.append("""
                 SELECT symbol, datetime, open, high, low, close, volume, amount,
                        'stock' AS asset_type, 'tickflow' AS source
                 FROM kline_minute
             """)
-        if self._has_parquet("kline_etf_minute"):
+        if "kline_etf_minute" in existing:
             minute_parts.append("""
                 SELECT symbol, datetime, open, high, low, close, volume, amount,
                        'etf' AS asset_type, 'tickflow' AS source
                 FROM kline_etf_minute
             """)
 
-        if self._has_parquet("instruments"):
+        if "instruments" in existing:
             inst_parts.append("""
                 SELECT symbol, name, code, exchange, 'stock' AS asset_type, 'tickflow' AS source
                 FROM instruments
             """)
-        if self._has_parquet("instruments_index"):
+        if "instruments_index" in existing:
             inst_parts.append("""
                 SELECT symbol, name, code, NULL AS exchange, 'index' AS asset_type, 'tickflow' AS source
                 FROM instruments_index
                 WHERE coalesce(asset_type, 'index') != 'etf'
             """)
-        if self._has_parquet("instruments_etf"):
+        if "instruments_etf" in existing:
             inst_parts.append("""
                 SELECT symbol, name, code, NULL AS exchange, 'etf' AS asset_type, 'tickflow' AS source
                 FROM instruments_etf
@@ -341,8 +520,11 @@ class DataStore:
         for name, parts in unions.items():
             if not parts:
                 continue
+            sql = f"CREATE OR REPLACE VIEW {name} AS " + " UNION ALL BY NAME ".join(parts)
+            with self._view_lock:
+                self._view_sql[name] = sql
             try:
-                self.db.execute(f"CREATE OR REPLACE VIEW {name} AS " + " UNION ALL BY NAME ".join(parts))
+                self._connection.execute(sql)
             except Exception as e:  # noqa: BLE001
                 logger.debug("unified view %s skipped: %s", name, e)
 
@@ -561,6 +743,18 @@ class KlineRepository:
         with shared_heavy_job_limiter.slot("exclusive"):
             self._refresh_enriched_impl()
 
+    def _enriched_history_source(self, start: date) -> str | list[str]:
+        """enriched 历史读取的数据源: 优先只枚举 date >= start 的分区文件。
+
+        分区目录无法识别或枚举为空时回退到全量 glob, 保证不漏读 (宁可慢)。
+        """
+        files = enriched_files_since(self.store.data_dir / "kline_daily_enriched", start)
+        if files:
+            logger.info("enriched history source: %d 个分区文件 (>= %s)", len(files), start)
+            return files
+        logger.info("enriched history source: 回退全量 glob (>= %s)", start)
+        return self._enriched_glob
+
     def _refresh_enriched_impl(self) -> None:
         """从 parquet 加载 enriched 最新日到内存 + 构建聚合表。
 
@@ -612,7 +806,7 @@ class KlineRepository:
                                          "volume", "amount", "raw_close", "raw_high", "raw_low"]
                              if c in df_latest.columns]
                 lf = (
-                    scan_enriched_parquet(self._enriched_glob)
+                    scan_enriched_parquet(self._enriched_history_source(start_full))
                     .filter(pl.col("date") >= start_full)
                     .sort(["symbol", "date"])
                 )
@@ -641,6 +835,13 @@ class KlineRepository:
                     del df_hist
                     logger.info("enriched refresh step done: compute window rows=%d (%.2fs)",
                                 len(df_full), time.perf_counter() - step)
+
+                    from app.share_capital import apply_historical_shares
+                    # 这份缓存供选股/回测直接算市值 (raw_close x 股本), 股本必须是当日值。
+                    df_full = apply_historical_shares(
+                        df_full, self.get_historical_shares(), today=cn_today(),
+                        derive_snapshot_fallback=True,
+                    )
 
                     # 缓存完整历史 (含指标+必要基础信息) 供 filter_history/backtest 直接复用
                     if self.get_matrix_data_generation("stock") != refresh_generation:
@@ -2137,65 +2338,41 @@ class KlineRepository:
         self._refresh_etf_instruments()
 
     def refresh_index_views(self) -> None:
-        """刷新指数相关 DuckDB 视图。"""
-        d = self.store.data_dir.as_posix()
-        statements = [
-            f"""CREATE OR REPLACE VIEW kline_index_daily AS
-                SELECT * FROM read_parquet('{d}/kline_index_daily/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_index_enriched AS
-                SELECT * FROM read_parquet('{d}/kline_index_enriched/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_etf_daily AS
-                SELECT * FROM read_parquet('{d}/kline_etf_daily/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW kline_etf_enriched AS
-                SELECT * FROM read_parquet('{d}/kline_etf_enriched/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW instruments_index AS
-                SELECT * FROM read_parquet('{d}/instruments_index/**/*.parquet', union_by_name=true)""",
-            f"""CREATE OR REPLACE VIEW instruments_etf AS
-                SELECT * FROM read_parquet('{d}/instruments_etf/**/*.parquet', union_by_name=true)""",
-        ]
-        for sql in statements:
+        """刷新指数/ETF 相关 DuckDB 视图 (只重建这几张, 不触碰其它视图)。"""
+        names = (
+            "kline_index_daily",
+            "kline_index_enriched",
+            "kline_etf_daily",
+            "kline_etf_enriched",
+            "instruments_index",
+            "instruments_etf",
+        )
+        paths = self.store.view_paths()
+        for name in names:
+            path = paths.get(name)
+            if path is None:
+                continue
             try:
                 with self._lock:
-                    self.db.execute(sql)
-            except Exception as e:  # noqa: BLE001
+                    self.store.refresh_view(name, path)
+            except Exception as e:
                 logger.debug("index/etf view refresh skipped: %s", e)
-        with self._lock:
-            self.store._register_unified_views()
+        self.store._refresh_unified_views()
 
     def rebuild_views(self) -> None:
-        """重建全部 13 张 parquet 视图并重挂 unified 视图 —— 唯一权威实现。
+        """重建全部 parquet 视图并重挂 unified 视图 —— 唯一权威实现。
 
-        原先 daily_pipeline._refresh_views(盘后管道) 与 /api/data/clear(清库) 各自
-        内联了同一份视图重建 SQL, 清库那份还漏了几张视图导致漂移。此处收敛为单一入口:
-        覆盖全部 13 张视图 (二者的超集), 空目录 (清库后) 也能安全重挂。
+        视图定义来自 `DataStore.view_paths()`, 不再是这里的第二份清单 (原先只覆盖
+        13 张, 与 DataStore 的 21 张漂移)。空目录 (清库后) 建不出来的视图会告警,
+        与原行为一致。
         """
-        d = self.store.data_dir.as_posix()
-        views = {
-            "kline_daily": f"{d}/kline_daily/**/*.parquet",
-            "kline_enriched": f"{d}/kline_daily_enriched/**/*.parquet",
-            "kline_index_daily": f"{d}/kline_index_daily/**/*.parquet",
-            "kline_index_enriched": f"{d}/kline_index_enriched/**/*.parquet",
-            "kline_etf_daily": f"{d}/kline_etf_daily/**/*.parquet",
-            "kline_etf_enriched": f"{d}/kline_etf_enriched/**/*.parquet",
-            "kline_etf_minute": f"{d}/kline_etf_minute/**/*.parquet",
-            "kline_minute": f"{d}/kline_minute/**/*.parquet",
-            "adj_factor": f"{d}/adj_factor/**/*.parquet",
-            "adj_factor_etf": f"{d}/adj_factor_etf/**/*.parquet",
-            "instruments": f"{d}/instruments/**/*.parquet",
-            "instruments_index": f"{d}/instruments_index/**/*.parquet",
-            "instruments_etf": f"{d}/instruments_etf/**/*.parquet",
-        }
-        for name, path in views.items():
+        for name, path in self.store.view_paths().items():
             try:
                 with self._lock:
-                    self.db.execute(
-                        f"CREATE OR REPLACE VIEW {name} AS "
-                        f"SELECT * FROM read_parquet('{path}', union_by_name=true)"
-                    )
-            except Exception as e:  # noqa: BLE001
+                    self.store.refresh_view(name, path)
+            except Exception as e:
                 logger.warning("rebuild view %s failed: %s", name, e)
-        with self._lock:
-            self.store._register_unified_views()
+        self.store._refresh_unified_views()
 
     @staticmethod
     def _atomic_write_parquet(df: pl.DataFrame, out: Path) -> None:

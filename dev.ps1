@@ -191,8 +191,15 @@ Write-Host ''
 $backendPidFile  = [System.IO.Path]::GetTempFileName()
 $frontendPidFile = [System.IO.Path]::GetTempFileName()
 
+# uvicorn --reload 默认只监视 backend/ 目录 (不含仓库根的 data/), 且 watchfiles 默认
+# 已忽略 __pycache__ 与 *.log。这里显式排除仍是必要的兜底: 一旦将来加了自定义
+# reload 目录或 watchfiles 默认行为变化, 运行期生成物不会把开发态拖进重启风暴
+# (实测: 改动 __pycache__/*.pyc 与 *.log 都不触发重载, 只有源码改动会)。
+$ReloadExcludes = @('__pycache__', '__pycache__/*', '*.pyc', '*.log',
+                    '.pytest_cache', '.ruff_cache', '.benchmarks')
+
 $backendJob = Start-Job -Name 'backend' -ScriptBlock {
-    param($pidFile, $dir, $envFile, $bindAddress, $port)
+    param($pidFile, $dir, $envFile, $bindAddress, $port, $reloadExcludes)
     # Start-Job 开的是全新 powershell.exe 子进程, 不继承主进程的 UTF-8 设置,
     # 默认用系统 ANSI (中文 Windows = GBK/cp936) 解码后端 UTF-8 输出 → 中文乱码。
     # 这里强制子进程用 UTF-8, 与 app/__init__.py 的 stdout/stderr 编码对齐。
@@ -202,8 +209,10 @@ $backendJob = Start-Job -Name 'backend' -ScriptBlock {
     $env:PYTHONUNBUFFERED = '1'
     Set-Location $dir
     $envArgs = if (Test-Path $envFile) { @('--env-file', $envFile) } else { @() }
-    & .\.venv\Scripts\python.exe -m uvicorn app.main:app @envArgs --reload --host $bindAddress --port $port 2>&1
-} -ArgumentList $backendPidFile, $BackendDir, $EnvFile, $BindAddress, $BackendPort
+    $excludeArgs = @()
+    foreach ($pattern in $reloadExcludes) { $excludeArgs += '--reload-exclude', $pattern }
+    & .\.venv\Scripts\python.exe -m uvicorn app.main:app @envArgs --reload @excludeArgs --host $bindAddress --port $port 2>&1
+} -ArgumentList $backendPidFile, $BackendDir, $EnvFile, $BindAddress, $BackendPort, $ReloadExcludes
 
 $frontendJob = Start-Job -Name 'frontend' -ScriptBlock {
     param($pidFile, $dir, $bindAddress, $backendPort, $port)
