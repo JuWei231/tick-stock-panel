@@ -40,7 +40,7 @@ from app.price_limits import (
     polars_limit_price,
     polars_price_limit_pct,
 )
-from app.share_capital import apply_historical_float_shares, load_share_history
+from app.share_capital import apply_historical_shares, load_share_history
 
 logger = logging.getLogger(__name__)
 
@@ -795,7 +795,14 @@ def compute_limit_signals(
     df = df.join(inst_subset, on="symbol", how="left", suffix="_inst")
 
     if "turnover_rate" in want:
-        df = apply_historical_float_shares(df, historical_shares, today=cn_today())
+        # 换手率 = volume / 流通股本, 流通股本必须是**当日**值: instruments 只有最新快照,
+        # 直接用它会让历史换手率系统性偏低(送转越多越严重)。有财务股本表用公告股本,
+        # 没有则按 close/raw_close 推定当日股本 (见 share_capital.derive_snapshot_shares)。
+        # 该列只用于本段计算, 随后即被 drop, 不会落进 enriched 分区。
+        df = apply_historical_shares(
+            df, historical_shares, today=cn_today(), columns=("float_shares",),
+            derive_snapshot_fallback=True,
+        )
 
     # 计算换手率(%) = volume(手) * 10000 / float_shares(股)
     if "turnover_rate" in want and "float_shares" in df.columns and "volume" in df.columns:

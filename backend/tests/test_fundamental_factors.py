@@ -278,3 +278,36 @@ def test_financial_sync_merge_unknown_announce_date_does_not_win():
     row = fs._merge_report_history(old_missing, revised).to_dicts()[0]
     assert row["announce_date"] == "2026-02-01"
     assert row["roe"] == 9.5
+
+
+def test_financial_sync_merge_same_key_same_date_prefers_last_frame():
+    """同键 + 同公告日必须以输入顺序定胜负(后写的那份胜出)。
+
+    股本/解禁类事件的 announce_date 就等于生效日, 同一 (symbol, period_end) 反复同步时
+    日期完全相同。若只靠 group_by 取 last() 的偶然行序, 旧口径的错行永远改不掉
+    (实测有 67 行把"送转后的股本"与除权日的正确值混在一起)。
+    """
+    from app.services import financial_sync as fs
+
+    def frame(total: float) -> pl.DataFrame:
+        return pl.DataFrame({
+            "symbol": ["000157.SZ"],
+            "period_end": ["2001-09-26"],
+            "announce_date": ["2001-09-26"],
+            "total_shares": [total],
+        })
+
+    # 后写的 1.5 亿胜出(而不是"较小值"或"较大值"胜出)
+    assert fs._merge_report_history(frame(3e8), frame(1.5e8)).to_dicts()[0]["total_shares"] == 1.5e8
+    # 输入顺序反过来 → 后写的 3 亿胜出, 证明胜负由顺序决定而非数值
+    assert fs._merge_report_history(frame(1.5e8), frame(3e8)).to_dicts()[0]["total_shares"] == 3e8
+    # 逐列独立: 新行缺列时仍由旧行补齐
+    partial = pl.DataFrame({
+        "symbol": ["000157.SZ"],
+        "period_end": ["2001-09-26"],
+        "announce_date": ["2001-09-26"],
+        "float_shares": [5e7],
+    })
+    row = fs._merge_report_history(frame(3e8), partial).to_dicts()[0]
+    assert row["total_shares"] == 3e8
+    assert row["float_shares"] == 5e7

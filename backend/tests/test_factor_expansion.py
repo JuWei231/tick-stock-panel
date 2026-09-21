@@ -26,6 +26,9 @@ PREV_CLOSE = np.roll(CLOSE, 1)
 PREV_CLOSE[0] = 99.0
 VOLUME = 1_000_000 + 500.0 * T                           # 量能缓增
 TURNOVER = VOLUME / 200_000_000.0                        # 流通股本 2 亿股
+# 不复权价: 前复权价 = 原始价 x ratio (此处 ratio=0.8)。市值/规模口径必须用原始价,
+# 用 CLOSE 会让 log_float_mv 的黄金值无法区分两种口径, 也就锁不住这个缺陷。
+RAW_CLOSE = CLOSE / 0.8
 RET = np.concatenate([[np.nan], CLOSE[1:] / CLOSE[:-1] - 1.0])
 
 # 列代数型因子的依赖列直接给黄金友好值
@@ -45,6 +48,7 @@ def _panel() -> pl.DataFrame:
         "high": np.maximum(OPEN, CLOSE) * 1.01,
         "low": np.minimum(OPEN, CLOSE) * 0.99,
         "close": CLOSE,
+        "raw_close": RAW_CLOSE,
         "prev_close": PREV_CLOSE,
         "volume": VOLUME,
         "amount": VOLUME * CLOSE * 100.0,
@@ -126,14 +130,31 @@ def test_obv_trend_bounded_and_golden() -> None:
 
 
 def test_log_float_mv_golden_and_fail_closed() -> None:
+    """流通市值对数用**不复权价**算; 换手率为 0 或缺 raw_close 时 fail-closed。"""
     frame = _materialize(["log_float_mv"])
     got = _col(frame, "log_float_mv")
-    golden = np.log(CLOSE * VOLUME / TURNOVER)
-    assert np.allclose(got, golden, atol=1e-10)  # = ln(流通市值), 股本=2亿
+    golden = np.log(RAW_CLOSE * VOLUME / TURNOVER)  # = ln(流通市值), 股本=2亿
+    assert np.allclose(got, golden, atol=1e-10)
+    # 反例: 用前复权 close 会整体偏移 ln(close/raw_close) = ln(0.8), 必须能被区分
+    assert not np.allclose(got, np.log(CLOSE * VOLUME / TURNOVER), atol=1e-6)
     # 换手率为 0 → None (fail-closed, 不产生 inf)
     broken = _panel().with_columns(pl.lit(0.0).alias("turnover_rate"))
     out = materialize_scoring_columns(broken, ["log_float_mv"])
     assert out["log_float_mv"].is_null().all()
+    # 缺 raw_close → 依赖不完整, 该因子整列不产出(不得退回前复权价)
+    out2 = materialize_scoring_columns(_panel().drop("raw_close"), ["log_float_mv"])
+    assert "log_float_mv" not in out2.columns
+
+
+def test_warn_missing_valuation_price_is_once_per_context(caplog) -> None:
+    """缺不复权价的告警按上下文字典去重, 避免热路径刷屏。"""
+    from app.share_capital import warn_missing_valuation_price
+
+    with caplog.at_level("WARNING"):
+        warn_missing_valuation_price("test.valuation_price.once")
+        warn_missing_valuation_price("test.valuation_price.once")
+    hits = [r for r in caplog.records if "test.valuation_price.once" in r.getMessage()]
+    assert len(hits) == 1
 
 
 def test_position_240d_and_distance_to_high() -> None:

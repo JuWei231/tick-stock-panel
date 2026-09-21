@@ -163,6 +163,12 @@ def _merge_report_history(*frames: pl.DataFrame) -> pl.DataFrame:
     实现多数据源并集共存。历史报告期不可变, 合并不会引入过期数据。
     无 announce_date 的帧按输入顺序, 后写优先(与旧行为 keep="last" 一致);
     公告日为空视为最旧, 不得压过带公告日的行。
+
+    ⚠ 同键 + 同公告日时, 胜负必须由输入顺序决定: 送转/解禁类股本事件的
+    announce_date 就等于生效日, 同一 (symbol, period_end) 反复同步时日期完全相同,
+    只靠 group_by 的行序取 last() 会让"新值覆盖旧值"变成偶然 —— 旧口径的错行
+    (实测 67 行把送转后的股本提前一天写进除权日)会永远改不掉。因此这里显式带上
+    输入序号 (_merge_order) 参与排序, 并让 group_by 保持顺序。
     """
     valid = [
         frame
@@ -174,6 +180,7 @@ def _merge_report_history(*frames: pl.DataFrame) -> pl.DataFrame:
     merged = (
         pl.concat(valid, how="diagonal_relaxed")
         .filter(pl.col("symbol").is_not_null() & pl.col("period_end").is_not_null())
+        .with_row_index("_merge_order")  # 输入顺序 = 优先级, 越后写越优先
     )
     sort_keys = ["symbol", "period_end"] + (
         ["announce_date"] if "announce_date" in merged.columns else []
@@ -181,10 +188,12 @@ def _merge_report_history(*frames: pl.DataFrame) -> pl.DataFrame:
     # 公告日为空排在最前: 排到最后会让"公告日未知"的旧行在逐列 last() 时胜出,
     # 产出 announce_date 是新公告、数值却是旧值的自相矛盾行。symbol/period_end
     # 已在上面过滤掉空值, 不受该参数影响。
-    merged = merged.sort(sort_keys, nulls_last=False)
-    value_cols = [c for c in merged.columns if c not in ("symbol", "period_end")]
+    merged = merged.sort([*sort_keys, "_merge_order"], nulls_last=False)
+    value_cols = [
+        c for c in merged.columns if c not in ("symbol", "period_end", "_merge_order")
+    ]
     return (
-        merged.group_by("symbol", "period_end")
+        merged.group_by("symbol", "period_end", maintain_order=True)
         .agg([pl.col(c).drop_nulls().last() for c in value_cols])
         .sort(["symbol", "period_end"])
     )

@@ -258,6 +258,14 @@ def test_get_daily_default_end_is_beijing_today(monkeypatch) -> None:
                 "volume": [1.0], "amount": [1.0],
             })
 
+        # /daily 现在按 PIT 股本口径补 market_cap/float_market_cap, 需要这两个访问器。
+        # 本用例只校验窗口右端, 不做市值断言: 返回空表 → attach_market_cap 原样返回。
+        def get_instruments_asset(self, asset_type: str) -> pl.DataFrame:
+            return pl.DataFrame()
+
+        def get_historical_shares(self) -> pl.DataFrame:
+            return pl.DataFrame()
+
     monkeypatch.setattr(kline_api, "cn_today", lambda: BJ, raising=False)
     req = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(
         repo=_Repo(), quote_service=None, capabilities=None,
