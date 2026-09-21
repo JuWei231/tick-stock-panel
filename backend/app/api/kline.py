@@ -9,18 +9,16 @@ from datetime import date, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from functools import lru_cache
-from typing import TYPE_CHECKING, Optional
+from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response
 
-if TYPE_CHECKING:  # 仅用于注解: 运行期 polars 在各函数内按需导入(热路径避免模块级重依赖)
-    import polars as pl
-
 from app.indicators.pipeline import compute_enriched, compute_enriched_single
 from app.market_time import cn_now, cn_today, in_continuous_session
-from app.price_limits import is_risk_warning_name, price_limit_pct
+from app.price_limits import is_no_limit_day, is_risk_warning_name, parse_listing_date, price_limit_pct
 from app.db_safe import is_valid_ext_ident
 from app.services import kline_sync, trading_day
+from app.services import minute_adjust
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +265,7 @@ def _get_price_limit_info(
     if asset_type == "index":
         return None
 
-    info = {
+    info: dict = {
         "rate": price_limit_pct(
             symbol,
             trade_date,
@@ -277,26 +275,39 @@ def _get_price_limit_info(
         ),
         "limit_up": None,
         "limit_down": None,
+        "no_limit": False,
         "source": "rule",
     }
-    if trade_date != cn_today():
-        return info
 
+    # instrument 行一次取出: 今日权威涨跌停价 + listing_date 窗口判定共用
+    row: dict | None = None
     try:
         import polars as pl
 
         instruments = repo.get_instruments_asset(asset_type)
         available = [
             column
-            for column in ("symbol", "limit_up", "limit_down")
+            for column in ("symbol", "limit_up", "limit_down", "listing_date")
             if column in instruments.columns
         ]
-        if "symbol" not in available or len(available) == 1:
-            return info
-        hit = instruments.filter(pl.col("symbol") == symbol).select(available).head(1)
-        row = hit.to_dicts()[0] if not hit.is_empty() else None
+        if "symbol" in available and len(available) > 1:
+            hit = instruments.filter(pl.col("symbol") == symbol).select(available).head(1)
+            if not hit.is_empty():
+                row = hit.to_dicts()[0]
     except Exception:
+        row = None
+
+    # 注册制新股上市初期无涨跌幅: listing_date 命中窗口时 no_limit=True,
+    # 压过 rate 与维表值 (前端不再画涨跌停带, y 轴按实际数据自适应)
+    if row is not None:
+        listing = parse_listing_date(row.get("listing_date"))
+        if listing is not None and is_no_limit_day(symbol, listing, trade_date):
+            info["no_limit"] = True
+            return info
+
+    if trade_date != cn_today():
         return info
+
     if row is None:
         return info
 
@@ -358,23 +369,6 @@ def _get_previous_closes(
     return result
 
 
-def _attach_daily_valuation(df: pl.DataFrame, repo, asset_type: str) -> pl.DataFrame:
-    """股票日K行补齐"当日股本 + 总/流通市值"(与 share_capital 同一口径)。
-
-    信息条与图表会在**任意历史区间**显示市值/换手率, 因此必须在数据边界按当日股本与
-    不复权价算好: rows 里的 close 是前复权价、stock_info 是 instruments 最新快照,
-    前端把两者相乘会让含送转标的历史市值偏离数倍。ETF/指数无股本概念, 原样返回。
-    """
-    if asset_type != "stock" or df.is_empty():
-        return df
-    from app.share_capital import attach_market_cap
-
-    instruments = repo.get_instruments_asset("stock")
-    return attach_market_cap(
-        df, instruments, repo.get_historical_shares(), today=cn_today(),
-    )
-
-
 @router.get("/daily")
 def get_daily(
     request: Request,
@@ -428,7 +422,7 @@ def get_daily(
         except Exception as e:  # noqa: BLE001
             logger.debug("单股除权因子拉取失败 %s: %s", symbol, e)
         enriched = compute_enriched(raw, factors=factors)
-        rows = _attach_daily_valuation(enriched.tail(days), repo, asset_type).to_dicts()
+        rows = enriched.tail(days).to_dicts()
         # 即使 live 模式也尝试追加实时蜡烛
         rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
         resp = {"symbol": symbol, "name": stock_name, "stock_info": stock_info, "rows": rows, "source": "live"}
@@ -438,7 +432,7 @@ def get_daily(
             pref_key="daily_batch_compress",
         )
 
-    rows = _attach_daily_valuation(df, repo, asset_type).to_dicts()
+    rows = df.to_dicts()
 
     # 追加/覆盖今日实时蜡烛
     rows = _maybe_inject_live_candle(request, symbol, rows, asset_type)
@@ -505,17 +499,20 @@ def _latest_live_candle(
         if not qs:
             return None
         df_today, enriched_date = qs.get_enriched_today()
-    elif asset_type == "etf":
+    elif asset_type in {"etf", "index"}:
         df_today, enriched_date = request.app.state.repo.get_enriched_latest_asset(
-            "etf", refresh=refresh_asset,
+            asset_type, refresh=refresh_asset,
         )
     else:
         return None
     if df_today.is_empty():
         return None
 
-    # 非交易日(周末/假日)缓存日期 != 今天, 跳过注入避免产生重复蜡烛
-    if not enriched_date or enriched_date != date.today():
+    # 非交易日(周末/假日)缓存日期 != 北京今天, 跳过注入避免产生重复蜡烛。
+    # 必须用 cn_today(): 美洲时区主机整个 A 股交易时段本地日期落后北京一天,
+    # 旧代码盘中直接丢K。UTC 主机盘中(UTC 1:30-7:00)本地日期与北京相同, 并不丢K;
+    # UTC 的旧症状是北京 00:00-08:00 把昨日残留快照误当实时K注入。
+    if not enriched_date or enriched_date != cn_today():
         return None
 
     # 查找该 symbol 的实时 enriched 行
@@ -831,6 +828,7 @@ def get_minute_batch(request: Request, body: dict):
     def _pull(asset: str, sym_list: list[str], start: datetime) -> None:
         if not sym_list:
             return
+        raw_basis = minute_adjust.minute_basis_is_raw(repo.store.data_dir)
         df_live = kline_sync.sync_minute_batch(
             sym_list,
             start_time=start,
@@ -838,18 +836,25 @@ def get_minute_batch(request: Request, body: dict):
             batch_size=lim.batch if lim else None,
             rpm=lim.rpm if lim else None,
             asset_type=asset,
+            raw_basis=raw_basis,
         )
         if df_live.is_empty():
             return
         try:
             # 读-改-写必须持仓库写锁 (与全量分钟服务/盘后同步同一纪律, Windows 临时文件占用)。
             # 仅在拿到真实目录时落盘: data_dir 异常 (非 Path) 时跳过, 只返回本轮数据。
+            # 落盘必须是原始口径 (raw_basis=True 时 sync 已按 adjust='none' 取回);
+            # 对外响应再统一复权投影。
             minute_dir = minute_dirs[asset]
             if isinstance(minute_dir, Path):
                 with repo._write_lock:
                     kline_sync._write_minute_partition(df_live, minute_dir)
         except Exception as e:  # noqa: BLE001
             logger.warning("minute-batch 补拉落盘失败 (降级为仅返回): %s", e)
+        if raw_basis:
+            df_live = minute_adjust.apply_minute_adjustment(
+                df_live, repo.store.data_dir, asset,
+            )
         for part in df_live.partition_by("symbol", maintain_order=True):
             live_map[part["symbol"][0]] = part.sort("datetime")
 
@@ -993,6 +998,7 @@ def get_minute(
     """
     repo = request.app.state.repo
     capset = request.app.state.capabilities
+    raw_basis = minute_adjust.minute_basis_is_raw(repo.store.data_dir)
     asset_type = repo.resolve_asset_type(symbol)
     stock_info = _get_stock_info(repo, symbol) if asset_type == "stock" else _get_asset_info(repo, symbol, asset_type)
     stock_name = stock_info.get("name")
@@ -1022,7 +1028,10 @@ def get_minute(
         trade_date = cn_today()
         df = kline_sync.fetch_minute_single(
             symbol, trade_date, asset_type=asset_type, capset=capset,
+            raw_basis=raw_basis,
         )
+        if raw_basis:
+            df = minute_adjust.apply_minute_adjustment(df, repo.store.data_dir, asset_type)
         price_limit = _get_price_limit_info(
             repo, symbol, trade_date, asset_type, stock_name,
         )
@@ -1054,8 +1063,13 @@ def get_minute(
         # 时段边界)则落回下方本地优先路径。
         live_df = kline_sync.fetch_minute_single(
             symbol, trade_date, asset_type=asset_type, capset=capset,
+            raw_basis=raw_basis,
         )
         if not live_df.is_empty():
+            if raw_basis:
+                live_df = minute_adjust.apply_minute_adjustment(
+                    live_df, repo.store.data_dir, asset_type,
+                )
             return _gzip_payload(
                 request,
                 {
@@ -1104,7 +1118,12 @@ def get_minute(
     # 本地不完整或无数据 → 从当前有效分钟源实时拉取
     live_df = kline_sync.fetch_minute_single(
         symbol, trade_date, asset_type=asset_type, capset=capset,
+        raw_basis=raw_basis,
     )
+    if raw_basis and not live_df.is_empty():
+        live_df = minute_adjust.apply_minute_adjustment(
+            live_df, repo.store.data_dir, asset_type,
+        )
     return _gzip_payload(
         request,
         {
@@ -1264,7 +1283,7 @@ async def sync_minute(request: Request):
 
 @router.post("/sync_minute_single")
 async def sync_minute_single(request: Request, body: dict):
-    """手动拉取单只股票的分钟K并落库 (前复权)。
+    """手动拉取单只股票的分钟K并落库 (口径随基准标记: 未迁移=前复权, 已迁移=原始)。
 
     body: { "symbol": "000001.SZ" }
     用于个股分时图"获取数据"按钮: 本地无数据时单独拉取并持久化。
@@ -1308,6 +1327,33 @@ async def sync_minute_single(request: Request, body: dict):
     _refresh_single_view(repo, "kline_minute")
 
     return {"status": "ok", "symbol": symbol, "rows": written}
+
+
+@router.post("/minute-migrate")
+async def minute_migrate(request: Request):
+    """存量分钟K迁移为原始口径并启用读取时复权 (幂等, 见 services/minute_adjust)。
+
+    - 用日K原始收盘价做锚点, 把历史"拉取时前复权"的分区换算回原始价;
+    已是原始价的行 (全量分钟落盘) 锚点 k≈1 自动跳过;
+    - 全部分区成功后创建 .raw_basis 标记: 此后读取自动复权投影、拉取改取原始价;
+    - 失败不标记, 可重复调用续跑 (已换算分区二次运行为 no-op)。
+    返回 { partitions, converted_symbols, skipped_no_daily, failed, marked }。
+    """
+    import asyncio
+
+    repo = request.app.state.repo
+    loop = asyncio.get_event_loop()
+    stats = await loop.run_in_executor(
+        _long_task_executor,
+        lambda: minute_adjust.migrate_minute_to_raw(
+            repo.store.data_dir, write_lock=repo._write_lock,
+        ),
+    )
+    if stats.get("marked"):
+        from app.jobs.daily_pipeline import _refresh_single_view
+        _refresh_single_view(repo, "kline_minute")
+        _refresh_single_view(repo, "kline_etf_minute")
+    return {"status": "ok", **stats}
 
 
 @router.post("/clear_minute")

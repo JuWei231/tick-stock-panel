@@ -199,18 +199,10 @@ def scoring_value_expr(columns: Collection[str], name: str) -> pl.Expr | None:
         return hit.rolling_sum(window, min_samples=window).over("symbol")
     # ── 扩充批次 (2026-09-05): 全部滚动窗口默认 min_samples=窗口长 (fail-closed) ──
     if name == "log_float_mv":
-        # 流通市值 = 不复权价 x 流通股本; 流通股本由换手率反推
-        # (turnover_rate 百分数、volume 手 → 股本 = volume*1e4/turnover_rate, 常数对 log 无影响)。
-        # 价格必须用 raw_close: close 是前复权价, 乘当日股本等于把复权比计入两次,
-        # 历史流通市值系统性偏小, 且各股比例不同 → 截面排序失真。
-        # 缺 raw_close 时上游依赖门控(dependencies 含 raw_close)已返回 None → 输出空列, 不会退回前复权价。
-        from app.share_capital import VALUATION_PRICE
-
+        # 换手率 = 成交量/流通股本 → 股本 = volume/turnover_rate, 市值 = close x 股本
         return (
             pl.when((pl.col("turnover_rate") > 0) & (pl.col("volume") > 0))
-            .then(
-                (pl.col(VALUATION_PRICE) * pl.col("volume") / pl.col("turnover_rate")).log()
-            )
+            .then((pl.col("close") * pl.col("volume") / pl.col("turnover_rate")).log())
             .otherwise(None)
         )
     if name == "momentum_120d":

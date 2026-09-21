@@ -127,12 +127,6 @@ export const QK = {
   sectorRotationIndexDaily:  (symbol: string) => ['sector-rotation-index-daily', symbol] as const,
   // 扩展表 schema 清单 (板块切换的资金流列选择器等)
   extSchemaAll:         ['ext-schema-all'] as const,
-
-  // a-stock-data 集成 (astock 扩展页, 见 docs/astock-integration.md)
-  // limit 必须进键: 它是会改变结果的请求参数, 不能只写死在 queryFn 里。
-  astockReports:        (symbol: string) => ['astock-reports', symbol] as const,
-  astockMargin:         (symbol: string, limit: number) => ['astock-margin', symbol, limit] as const,
-  astockTelegraph:      (limit: number) => ['astock-telegraph', limit] as const,
 } as const
 
 // ===== SSE 应该 invalidate 的 key 前缀列表 =====

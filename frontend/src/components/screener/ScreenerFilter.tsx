@@ -86,17 +86,12 @@ export function applyFilter(rows: any[], f: ScreenerFilter): any[] {
     // 成交额(亿)
     const amount = (r.amount ?? 0) / 1e8
     if (v(f.amountMin) != null && amount < v(f.amountMin)!) return false
-    // 市值(亿): 口径 = 不复权价 x 当日股本。优先用后端下发的 market_cap; 结果行没有该列时
-    // 用 raw_close 现算 —— 不能用 close(前复权价)乘当日股本, 那会把复权比计入两次,
-    // 历史日期上系统性偏小(实测中位 2%、p90 36%、最大 94%), 与后端筛选口径不一致。
-    const price = Number(r.raw_close ?? close)
-    const cap = r.market_cap != null ? Number(r.market_cap) / 1e8 : price * (r.total_shares ?? 0) / 1e8
+    // 市值(亿)
+    const cap = close * (r.total_shares ?? 0) / 1e8
     if (v(f.marketCapMin) != null && cap < v(f.marketCapMin)!) return false
     if (v(f.marketCapMax) != null && cap > v(f.marketCapMax)!) return false
     // 流通市值(亿)
-    const fcap = r.float_market_cap != null
-      ? Number(r.float_market_cap) / 1e8
-      : price * (r.float_shares ?? 0) / 1e8
+    const fcap = close * (r.float_shares ?? 0) / 1e8
     if (v(f.floatCapMin) != null && fcap < v(f.floatCapMin)!) return false
     if (v(f.floatCapMax) != null && fcap > v(f.floatCapMax)!) return false
     // 量比

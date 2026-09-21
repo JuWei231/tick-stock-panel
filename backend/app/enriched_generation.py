@@ -137,27 +137,13 @@ def _process_is_alive(pid: Any) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return False
-    except SystemError as exc:
-        # Python on Windows 对"已退出的 pid"会在 os.kill 内部抛 OSError(winerror=87)
-        # 又被包装成 SystemError("<class 'OSError'> returned a result with an exception
-        # set"), 原 OSError 挂在 __context__ 上 —— 此时下方 `except OSError` 根本不会
-        # 执行, 启动阶段会直接以未捕获异常失败。解包 context 才能走到"已死"判定。
-        return not _is_dead_pid_error(getattr(exc, "__context__", None))
     except (OSError, PermissionError) as exc:
-        return not _is_dead_pid_error(exc)
+        # Windows 对不存在的 pid 返回 WinError 87 (ERROR_INVALID_PARAMETER),
+        # 不会映射为 ProcessLookupError; 按存活处理会让孤儿发布锁永远无法恢复。
+        if getattr(exc, "winerror", None) == 87:
+            return False
+        return True
     return True
-
-
-def _is_dead_pid_error(exc: BaseException | None) -> bool:
-    """判定该异常是否表示"pid 不存在/已退出"。
-
-    Windows 对不存在的 pid 走 ERROR_INVALID_PARAMETER(87); 本机实测同一调用
-    也可能返回 WinError 11。两者都只说明探测失败, 不能据此认为进程仍存活 ——
-    按存活处理会让孤儿发布锁永远无法恢复 (启动直接失败)。
-    """
-    if not isinstance(exc, OSError):
-        return False
-    return getattr(exc, "winerror", None) in (87, 11)
 
 
 def _ready_payload(generation: str) -> dict[str, Any]:

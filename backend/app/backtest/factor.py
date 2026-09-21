@@ -42,11 +42,6 @@ FACTOR_WARMUP_DAYS = 120
 FACTOR_METHODOLOGY_VERSION = "factor_v2"
 _DAILY_FORWARD_HORIZONS = (1, 3, 5)
 
-# enriched 分区里直接存储、可按需加入因子面板请求的基础列 (依赖解析命中时才会请求)。
-_PANEL_LOADABLE_COLUMNS = frozenset({
-    "amount", "turnover_rate", "raw_close", "raw_high", "raw_low", "consecutive_limit_ups",
-})
-
 
 @dataclass
 class FactorConfig:
@@ -414,14 +409,6 @@ class FactorBacktestService:
             for name in factor_names
         ):
             panel_columns.append("consecutive_limit_ups")
-        # 因子的 enriched 基础依赖必须随面板一起加载, 漏列时该因子整列不产出
-        # (例: log_float_mv 依赖不复权 raw_close —— 市值/规模口径不能用前复权 close)。
-        # 只补"分区里直接存了"的列, 指标/信号仍由补算管线现算。
-        from app.factors.registry import factor_dependencies
-
-        for dependency in sorted(factor_dependencies(factor_names)):
-            if dependency in _PANEL_LOADABLE_COLUMNS and dependency not in panel_columns:
-                panel_columns.append(dependency)
         load_start = config.start
         if any(name != "turnover_rate" for name in factor_names):
             load_start = config.start - timedelta(days=FACTOR_WARMUP_DAYS)

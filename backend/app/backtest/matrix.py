@@ -3641,20 +3641,8 @@ def _build_basic_filter_mask_uncached(market: MarketDataMatrix, config: dict) ->
     if config.get("price_max") is not None:
         mask &= close <= float(config["price_max"])
 
-    # 市值用不复权价: close 是前复权, 历史值含未来除权。
-    raw_close = _optional_field(market, "raw_close")
-    from app.share_capital import warn_market_cap_unavailable
-
-    if (
-        config.get("market_cap_min") is not None or config.get("market_cap_max") is not None
-    ) and "total_shares" not in market.fields:
-        warn_market_cap_unavailable("matrix.basic_filter", "total_shares")
-    _apply_bound(mask, raw_close * _optional_field(market, "total_shares"), config, "market_cap")
-    if (
-        config.get("float_cap_min") is not None or config.get("float_cap_max") is not None
-    ) and "float_shares" not in market.fields:
-        warn_market_cap_unavailable("matrix.basic_filter", "float_shares")
-    _apply_bound(mask, raw_close * _optional_field(market, "float_shares"), config, "float_cap")
+    _apply_bound(mask, close * _optional_field(market, "total_shares"), config, "market_cap")
+    _apply_bound(mask, close * _optional_field(market, "float_shares"), config, "float_cap")
     _apply_bound(mask, _required_field_for_bound(market, config, "amount"), config, "amount")
     _apply_bound(mask, _optional_field(market, "turnover_rate"), config, "turnover")
 
@@ -4036,27 +4024,10 @@ def _compute_matrix_feature(market: MarketDataMatrix, name: str) -> np.ndarray:
         return valid_rolling_sum(hits, close_valid, window)
     # --- 扩充批次 (2026-09-05): numpy 内核实现, 口径与 strategy/scoring.py 一致 ---
     if name == "log_float_mv":
-        # 流通市值 = 不复权价 x 流通股本; 股本由换手率反推(volume 手 / turnover_rate 百分数,
-        # 常数 1e4 对 log 无影响)。价格必须用 raw_close: close 是前复权价, 与当日股本相乘
-        # 等于把复权比计入两次(各股比例不同 → 截面排序也会失真)。
-        from app.share_capital import VALUATION_PRICE, warn_missing_valuation_price
-
         turnover = market.field("turnover_rate")
-        raw = market.fields.get(VALUATION_PRICE)
-        if raw is None:
-            warn_missing_valuation_price("matrix.log_float_mv")
-            return np.full(market.shape, np.nan, dtype=np.float32)
-        price = np.asarray(raw, dtype=np.float64)
-        valid = (
-            close_valid
-            & np.isfinite(turnover)
-            & (turnover > 0)
-            & (market.volume > 0)
-            & np.isfinite(price)
-            & (price > 0)
-        )
+        valid = close_valid & np.isfinite(turnover) & (turnover > 0) & (market.volume > 0)
         out = np.full(market.shape, np.nan, dtype=np.float32)
-        np.multiply(price, market.volume, out=out, where=valid)
+        np.multiply(market.close, market.volume, out=out, where=valid)
         np.divide(out, turnover, out=out, where=valid)
         np.log(out, out=out, where=valid)
         return out

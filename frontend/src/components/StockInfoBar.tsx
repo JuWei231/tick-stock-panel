@@ -27,6 +27,8 @@ interface Props {
   onAddToWatchlist?: (groupId: string | null) => void
   onRemoveFromWatchlist?: () => void
   watchlistPending?: boolean
+  /** 加入自选日 (北京时间 YYYY-MM-DD); 有值时在自定义信息条按钮左侧显示「自选于」标注 */
+  addedDate?: string | null
 }
 
 /**
@@ -108,6 +110,7 @@ export function StockInfoBar({
   onAddToWatchlist,
   onRemoveFromWatchlist,
   watchlistPending,
+  addedDate,
 }: Props) {
   // 弹窗开关：纯本地状态，与数据/配置无关，放早期 return 之前
   const [customizerOpen, setCustomizerOpen] = useState(false)
@@ -160,17 +163,11 @@ export function StockInfoBar({
 
   const totalShares = stockInfo?.total_shares
   const floatShares = stockInfo?.float_shares
-  // 市值口径: 后端按"不复权价 x 当日股本"算好并逐行下发。行内缺失时(如分时行、或后端未注入)
-  // 才退回 "现价 x instruments 快照股本" —— 该回退只在展示当日行情时成立: 历史区间的
-  // close 是前复权价、股本是今天的快照, 两者直接相乘会让含送转标的的市值偏离数倍。
-  const rowMarketCap = latest.market_cap != null ? Number(latest.market_cap) : null
-  const rowFloatMarketCap = latest.float_market_cap != null ? Number(latest.float_market_cap) : null
-  const marketCap = rowMarketCap ?? (totalShares ? close * totalShares : null)
-  const floatMarketCap = rowFloatMarketCap ?? (floatShares ? close * floatShares : null)
-  // 换手率同理: enriched 的 turnover_rate 已按当日流通股本算出(百分数)。
-  const turnoverRate = latest.turnover_rate != null
-    ? Number(latest.turnover_rate)
-    : (floatShares && latest.volume ? (Number(latest.volume) * 100 / floatShares * 100) : null)
+  const marketCap = totalShares ? close * totalShares : null
+  const floatMarketCap = floatShares ? close * floatShares : null
+  const turnoverRate = floatShares && latest.volume
+    ? (Number(latest.volume) * 100 / floatShares * 100)
+    : null
 
   const displayName = stockInfo?.name ?? name ?? ''
   const extData = stockInfo?.ext ?? {}
@@ -301,6 +298,16 @@ export function StockInfoBar({
             >
               <RadioTower className="h-3.5 w-3.5" />
             </button>
+          )}
+          {/* 加入自选日标注 (常显): 弹窗不知道区间内哪天是交易日, 常显既避免错误的
+              区间判断, 也覆盖「区间外」与「周末加入」两种情况 */}
+          {addedDate && (
+            <span
+              className="shrink-0 font-mono text-[10px] text-muted"
+              title="加入自选日 (北京时间); 该日无K线时不画竖线"
+            >
+              自选于 {addedDate}
+            </span>
           )}
           <button
             onClick={() => setCustomizerOpen(true)}

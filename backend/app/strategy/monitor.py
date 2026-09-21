@@ -1484,11 +1484,9 @@ class MonitorRuleEngine:
     def _volume_delta_basic_mask(df: pl.DataFrame, bf: dict, name_map: dict[str, str]) -> pl.Expr | None:
         """轮询放量基础过滤掩码 (与策略 basic_filter 语义对齐, 字段缺失时该项跳过)。
 
-        支持: price_min/max (收盘价), market_cap_min (总市值=raw_close x total_shares),
+        支持: price_min/max (收盘价), market_cap_min (总市值=close x total_shares),
         float_cap_min/max (流通市值), amount_min (当日累计成交额), exclude_st (名称含 ST)。
         """
-        from app.share_capital import market_cap_expr, warn_market_cap_unavailable
-
         masks: list[pl.Expr] = []
         if bf.get("price_min") is not None:
             masks.append(pl.col("close") >= float(bf["price_min"]))
@@ -1496,21 +1494,12 @@ class MonitorRuleEngine:
             masks.append(pl.col("close") <= float(bf["price_max"]))
         if bf.get("amount_min") is not None and "amount" in df.columns:
             masks.append(pl.col("amount") >= float(bf["amount_min"]))
-        total_cap = market_cap_expr(df, "total_shares")
-        if total_cap is None and bf.get("market_cap_min") is not None:
-            # 配了市值门槛却拿不到股本列(实时帧未关联 instruments)时不静默放行
-            warn_market_cap_unavailable("monitor.volume_delta", "total_shares")
-        if bf.get("market_cap_min") is not None and total_cap is not None:
-            masks.append(total_cap >= float(bf["market_cap_min"]))
-        float_cap = market_cap_expr(df, "float_shares")
-        if float_cap is None and (
-            bf.get("float_cap_min") is not None or bf.get("float_cap_max") is not None
-        ):
-            warn_market_cap_unavailable("monitor.volume_delta", "float_shares")
-        if bf.get("float_cap_min") is not None and float_cap is not None:
-            masks.append(float_cap >= float(bf["float_cap_min"]))
-        if bf.get("float_cap_max") is not None and float_cap is not None:
-            masks.append(float_cap <= float(bf["float_cap_max"]))
+        if bf.get("market_cap_min") is not None and "total_shares" in df.columns:
+            masks.append((pl.col("close") * pl.col("total_shares")) >= float(bf["market_cap_min"]))
+        if bf.get("float_cap_min") is not None and "float_shares" in df.columns:
+            masks.append((pl.col("close") * pl.col("float_shares")) >= float(bf["float_cap_min"]))
+        if bf.get("float_cap_max") is not None and "float_shares" in df.columns:
+            masks.append((pl.col("close") * pl.col("float_shares")) <= float(bf["float_cap_max"]))
         if bf.get("exclude_st") and name_map:
             st_symbols = [
                 sym for sym, name in name_map.items()

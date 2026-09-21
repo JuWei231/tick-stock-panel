@@ -519,14 +519,10 @@ def market_snapshot(request: Request):
     if df.is_empty():
         return {"as_of": str(as_of), "rows": []}
 
-    from app.share_capital import market_cap_expr
-
-    total_cap = market_cap_expr(df, "total_shares")
-    if total_cap is not None and "market_cap" not in df.columns:
-        df = df.with_columns(total_cap.alias("market_cap"))
-    float_cap = market_cap_expr(df, "float_shares")
-    if float_cap is not None and "float_market_cap" not in df.columns:
-        df = df.with_columns(float_cap.alias("float_market_cap"))
+    if "close" in df.columns and "total_shares" in df.columns and "market_cap" not in df.columns:
+        df = df.with_columns((pl.col("close") * pl.col("total_shares")).alias("market_cap"))
+    if "close" in df.columns and "float_shares" in df.columns and "float_market_cap" not in df.columns:
+        df = df.with_columns((pl.col("close") * pl.col("float_shares")).alias("float_market_cap"))
 
     cols = [
         "symbol", "name", "close", "change_pct", "amount", "volume",

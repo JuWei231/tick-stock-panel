@@ -97,20 +97,10 @@ class GenericHTTPProvider:
     def __init__(self, config: CustomSourceConfig) -> None:
         self.config = config
         self.name = config.name
-        # httpx.Client() 构造本身要 ~0.7s (trust_env 默认 True 时在本机会到 ~1.6s,
-        # 含代理环境内省)。load_all() 会为每个 YAML 源构造 provider, 启动期白付这份
-        # 开销; 改为首次真正发请求时再建, 不影响任何取数路径。
-        self._client: httpx.Client | None = None
-
-    def _http_client(self) -> httpx.Client:
-        if self._client is None:
-            self._client = httpx.Client(timeout=30.0)
-        return self._client
+        self._client = httpx.Client(timeout=30.0)
 
     def close(self) -> None:
-        if self._client is not None:
-            self._client.close()
-            self._client = None
+        self._client.close()
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -489,7 +479,7 @@ class GenericHTTPProvider:
         else:
             request_kwargs["params"] = auth_params
             request_kwargs["json"] = body
-        resp = self._http_client().request(method, cfg.url, **request_kwargs)
+        resp = self._client.request(method, cfg.url, **request_kwargs)
         resp.raise_for_status()
         return extract_rows(resp.json(), cfg.response_path)
 
