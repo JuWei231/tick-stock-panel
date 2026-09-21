@@ -706,6 +706,11 @@ def test_get_instruments_not_claimed() -> None:
 def test_plugin_manifest_registers_tdx() -> None:
     """plugin.yaml 必须被 loader 正确解析并注册。"""
     from app.data_providers import custom as custom_sources
+    from app.data_providers.custom import loader
+
+    # _PLUGIN_STATUS/_PROVIDERS 是全局状态, 会被其它测试的加载器补丁或临时目录扫描
+    # 重建。本测试断言全局注册表内容, 因此先无补丁重建一次, 不依赖执行顺序。
+    loader._load_builtin_plugins()
 
     plugins = {p["name"]: p for p in custom_sources.list_plugins()}
     assert "tdx" in plugins, "tdx 插件未被发现"

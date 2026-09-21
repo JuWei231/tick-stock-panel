@@ -280,6 +280,14 @@ export interface KlineRow {
   close: number
   volume?: number
   change_pct?: number
+  /** 不复权原始收盘价 (市值等口径必须用它) */
+  raw_close?: number | null
+  /** 换手率百分数 (按当日流通股本计算) */
+  turnover_rate?: number | null
+  /** 总市值(元) = 不复权价 x 当日总股本 (后端按公告日口径算好) */
+  market_cap?: number | null
+  /** 流通市值(元) */
+  float_market_cap?: number | null
   ma5?: number | null
   ma20?: number | null
   ma60?: number | null
@@ -3736,6 +3744,14 @@ export const api = {
       timeoutMs: null,
       body: JSON.stringify(payload),
     }),
+
+  /** a-stock-data 集成 (astock 扩展页) — 信封 {state, items, ...}, 见 docs/astock-integration.md */
+  astockReports: (symbol: string) =>
+    request<AstockEnvelope>(`/api/astock/research/reports/${encodeURIComponent(symbol)}`),
+  astockMargin: (symbol: string, limit = 100) =>
+    request<AstockEnvelope>(`/api/astock/margin/${encodeURIComponent(symbol)}?limit=${limit}`),
+  astockTelegraph: (limit = 50) =>
+    request<AstockEnvelope>(`/api/astock/news/telegraph?limit=${limit}`),
 }
 
 // ===== Pipeline =====
@@ -3992,4 +4008,21 @@ export interface AnalysisMenu {
   created_at?: string | null
   updated_at?: string | null
   builtin?: boolean
+}
+
+// ===== a-stock-data 集成 (astock 扩展页) =====
+export interface AstockItem {
+  [key: string]: unknown
+}
+
+export interface AstockEnvelope {
+  state: 'ok' | 'error'
+  dataset?: string
+  symbol?: string
+  code?: string
+  date?: string
+  fetched_at?: string
+  message?: string
+  count: number
+  items: AstockItem[]
 }
