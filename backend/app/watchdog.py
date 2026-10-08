@@ -73,11 +73,11 @@ class HealthWatchdog:
                 )
                 self._consecutive_failures = 0
             except asyncio.CancelledError:
-                # stop() 的取消必须向上传播。CancelledError 继承 BaseException 而非
-                # Exception, 若被下面的兜底分支吞掉, 本协程会继续下一轮探测 -> 任务
-                # 永不结束 -> stop() 里的 await self._task 永久挂起, 进程无法关闭。
+                # 取消必须穿透: stop() 靠 task.cancel() 结束本循环, 若被下面的
+                # BaseException 分支吞掉, 取消会被误计为一次"探测失败"且循环
+                # 继续运行 — stop() 的 await self._task 永久等待 (关闭死锁)。
                 raise
-            except Exception as exc:  # 探测失败(含 to_thread 超时)都算失败
+            except BaseException as exc:  # 探测任何异常都算失败 (含 to_thread 超时)
                 self._consecutive_failures += 1
                 logger.error(
                     "watchdog probe failed (%d/%d): %r",

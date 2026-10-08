@@ -156,6 +156,7 @@ export function Screener() {
   const strategies = useQuery({
     queryKey: [...QK.screenerStrategies('all'), 'all'],
     queryFn: () => api.screenerStrategies(undefined, 'all'),
+    staleTime: 60_000,  // 策略池清单慢变 (与 Paper 同款), 减少切页重拉
   })
 
   // 激活策略自身的执行周期 (决定走缓存还是分钟实时跑)。
@@ -646,6 +647,7 @@ export function Screener() {
   const watchlist = useQuery({
     queryKey: QK.watchlist,
     queryFn: api.watchlistList,
+    staleTime: 30_000,
   })
   const watchlistSet = useMemo(() => {
     const symbols = watchlist.data?.symbols ?? []
@@ -682,32 +684,34 @@ export function Screener() {
     },
   })
 
-  // 策略监控: 查询规则, 建立 strategyId → ruleId 映射 (只看 type=strategy 且 enabled)
+  // 策略监控: 查询规则, 建立 assetType:strategyId → ruleId 映射 (只看 type=strategy 且 enabled)
   const monitorRules = useQuery({ queryKey: QK.monitorRules, queryFn: api.monitorRulesList })
   const strategyMonitorMap = useMemo(() => {
     const m = new Map<string, string>()
     for (const r of monitorRules.data?.rules ?? []) {
       if (r.type === 'strategy' && r.enabled && r.strategy_id) {
-        m.set(r.strategy_id, r.id)
+        m.set(`${r.asset_type ?? 'stock'}:${r.strategy_id}`, r.id)
       }
     }
     return m
   }, [monitorRules.data])
 
   const toggleStrategyMonitor = (strategyId: string, strategyName: string) => {
-    const existingRuleId = strategyMonitorMap.get(strategyId)
+    const existingRuleId = strategyMonitorMap.get(`${assetType}:${strategyId}`)
     if (existingRuleId) {
       // 已监控 → 删除规则
       api.monitorRuleDelete(existingRuleId).then(() =>
         qc.invalidateQueries({ queryKey: QK.monitorRules }),
       )
     } else {
-      // 未监控 → 直接创建 type=strategy 规则
+      // 未监控 → 直接创建 type=strategy 规则; 必须带当前页资产类型,
+      // 否则 ETF 页点监控会默认 stock, 引擎在股票轮评估, ETF 命中永不告警。
       api.monitorRuleSave({
         id: genRuleId(),
         name: `策略监控 · ${strategyName}`,
         enabled: true,
         type: 'strategy',
+        asset_type: assetType,
         scope: 'all',
         symbols: [],
         sector: null,
@@ -745,7 +749,7 @@ export function Screener() {
         title="策略"
         subtitle="基于本地 enriched 表 · 毫秒级 SQL"
         right={
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-nowrap overflow-x-auto max-w-full [&>*]:shrink-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
             {/* 资产类型切换: 股票 / ETF (分钟策略 asset_types 仅股票, ETF 列表自然不含) */}
             <div className="flex items-center h-7 rounded-btn border border-border overflow-hidden">
               {(['stock', 'etf'] as const).map(t => (
@@ -895,7 +899,20 @@ export function Screener() {
         {cardSize !== 'hidden' && (
         <section>
           {strategies.isLoading && <div className="text-sm text-muted">加载中…</div>}
-          {!strategies.isLoading && displayPool.length === 0 && (
+          {!strategies.isLoading && strategies.isError && (
+            <div className="flex flex-col items-center gap-2 py-4 text-center border border-dashed border-danger/40 rounded-btn">
+              <span className="text-sm text-secondary">策略列表加载失败，请重试；策略池配置本身不受影响。</span>
+              <button
+                type="button"
+                onClick={() => strategies.refetch()}
+                disabled={strategies.isFetching}
+                className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs text-accent transition-colors hover:bg-elevated disabled:opacity-50"
+              >
+                重试
+              </button>
+            </div>
+          )}
+          {!strategies.isLoading && !strategies.isError && displayPool.length === 0 && (
             <div className="text-sm text-muted py-4 text-center border border-dashed border-border rounded-btn">
               {pool.length === 0
                 ? '策略池为空，点击右上角「策略池」按钮添加策略'
@@ -926,7 +943,7 @@ export function Screener() {
                   onRun={() => handleRun(s)}
                   disabled={run.isPending && activeStrategy === s.id}
                   onSettings={() => setSettingsStrategyId(s.id)}
-                  monitored={strategyMonitorMap.has(s.id)}
+                  monitored={strategyMonitorMap.has(`${assetType}:${s.id}`)}
                   onToggleMonitor={() => toggleStrategyMonitor(s.id, s.name)}
                   timeframeBadge={isMinute ? '分钟' : undefined}
                 />
@@ -988,7 +1005,7 @@ export function Screener() {
                         <Filter className="h-3 w-3" />
                         筛选
                         {filterActive(filter) && (
-                          <span className="bg-accent text-base rounded-full min-w-4 h-4 px-1 flex items-center justify-center text-[10px] font-bold leading-none">
+                          <span className="bg-accent text-white rounded-full min-w-4 h-4 px-1 flex items-center justify-center text-[10px] font-bold leading-none">
                             {countActiveFilters(filter)}
                           </span>
                         )}

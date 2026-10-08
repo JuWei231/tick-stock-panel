@@ -585,17 +585,9 @@ def run_now(
                         from datetime import datetime, timedelta
                         adj_end = datetime.now()
                         adj_path = repo.store.data_dir / "adj_factor_etf" / "all.parquet"
-                        fallback_start = adj_end - timedelta(days=30)
-                        adj_start = fallback_start
-                        if adj_path.exists():
-                            max_date = pl.scan_parquet(adj_path).select(pl.col("trade_date").max()).collect().item()
-                            if max_date is not None:
-                                if isinstance(max_date, str):
-                                    adj_start = datetime.combine(_date.fromisoformat(max_date), datetime.min.time())
-                                elif isinstance(max_date, datetime):
-                                    adj_start = datetime.combine(max_date.date(), datetime.min.time())
-                                else:
-                                    adj_start = datetime.combine(max_date, datetime.min.time())
+                        # 首次无文件时与 ETF 日K 默认一年窗口对齐, 不要只拉 30 天。
+                        history_start = adj_end - timedelta(days=365)
+                        adj_start = index_sync.etf_adj_factor_window_start(adj_path, history_start)
                         _, affected_etfs = index_sync.sync_etf_adj_factor(
                             etf_symbols,
                             repo,
@@ -732,6 +724,45 @@ def run_now(
             stage_errors.append(f"compute_mainline: {e}")
             skipped.append("mainline")
 
+    # Step 2.8: 模拟盘结算: 顺延单按当日开盘/收盘撮合 → 除权调整 → 定版净值。
+    # 幂等: 重跑同日不会重复成交/二次除权 (订单状态与 corp_action 台账守卫)。
+    # 必须在日K/除权同步之后, 才能读到当日 raw OHLC 与因子。核心账务不受
+    # 「市场环境」等可选开关控制, 恒运行 (开销可忽略); 软失败不阻断主管道。
+    paper_summary: dict = {}
+    try:
+        emit("paper_settle", 94, "模拟盘结算…")
+        from app.strategy import paper as paper_trading
+        # 逐账户结算 (账户间订单/台账隔离), 汇总合并供日志与结果展示
+        totals = {"filled": 0, "expired": 0, "corp_actions": 0, "nav": None, "accounts": []}
+        for acc_id in paper_trading.list_account_ids(repo.store.data_dir):
+            s = paper_trading.settle_day(repo.store.data_dir, today.isoformat(), account_id=acc_id)
+            totals["filled"] += s.get("filled", 0)
+            totals["expired"] += s.get("expired", 0)
+            totals["corp_actions"] += s.get("corp_actions", 0)
+            if s.get("nav") is not None:
+                totals["nav"] = s["nav"]
+            totals["accounts"].append({"account": acc_id, **{k: s.get(k) for k in ("filled", "expired", "corp_actions")}})
+        paper_summary = totals
+        if paper_summary.get("filled") or paper_summary.get("corp_actions"):
+            logger.info("paper_settle: %s", paper_summary)
+        # 结算成交留痕 (V3): next_open/close 单的成交发生在盘后管道内, 盘中钩子
+        # 覆盖不到; 管道无 SSE 广播器, 这里补 alert_store 留痕进监控中心即可见。
+        if totals["filled"]:
+            try:
+                from app.services import alert_store
+                settle_events = []
+                for acc_id in paper_trading.list_account_ids(repo.store.data_dir):
+                    settle_events.extend(paper_trading.day_fill_events(
+                        repo.store.data_dir, today.isoformat(), account_id=acc_id))
+                if settle_events:
+                    alert_store.append_many(repo.store.data_dir, settle_events)
+            except Exception as e:
+                logger.warning("模拟盘结算成交留痕失败: %s", e)
+        emit("paper_settle", 94, "模拟盘结算完成")
+    except Exception as e:
+        logger.warning("paper_settle failed (soft): %s", e)
+        stage_errors.append(f"paper_settle: {e}")
+
     # Step 3: 刷新视图
     emit("refresh_views", 95, "刷新 DuckDB 视图…")
     _refresh_views(repo)
@@ -752,6 +783,7 @@ def run_now(
         "minute_rows": written_minute,
         "regime_days": regime_days,
         "mainline_rows": mainline_rows,
+        "paper_settle": paper_summary,
         "lagging_symbols": len(lagging_symbols),
         "enriched_total_days": enriched_total_days,
         "integrity_repair_from": repair_start.isoformat() if repair_start else None,
@@ -766,6 +798,94 @@ def run_now(
         raise PipelineStageError(stage_errors)
 
     return result
+
+
+def run_adj_factor_sync(
+    repo: KlineRepository,
+    capset: CapabilitySet,
+    on_progress: ProgressCb | None = None,
+) -> dict:
+    """独立同步除权因子(数据页单独按钮)。
+
+    与盘后管道 Step 1.5 的差异: 管道只拉日K范围或 15 天兜底窗口;
+    这里 start_time=None 拉**全历史** —— 用于切换数据源后的因子修复、
+    以及事件明细列扩表后的存量回填 (明细回填不改变 ex_factor,
+    sync_adj_factor 的变化判定不会因此触发 enriched 重算)。
+
+    下游联动与管道同语义: adj_factor 视图刷新 → 受影响个股 enriched
+    局部重算(全部日期) → kline_enriched 视图刷新 → 两表缓存失效。
+    enriched 尚未构建时跳过重算 (全量计算是盘后管道的职责)。
+    """
+    from datetime import datetime
+
+    emit = on_progress or _noop
+    adj_provider = _prefs.get_adj_factor_provider()
+    if not (capset.has(Cap.ADJ_FACTOR) or adj_provider != "tickflow"):
+        return {
+            "adj_factor_symbols": 0,
+            "adj_written": 0,
+            "enriched_days": 0,
+            "skipped_stages": ["sync_adj"],
+            "reason": "无可用除权因子数据源",
+        }
+
+    emit("resolve_universe", 5, "解析标的池…")
+    universe = _resolve_universe(capset, repo)
+    emit("resolve_universe", 10, f"标的池规模:{len(universe)} 只")
+
+    def _adj_chunk_progress(cur: int, tot: int) -> None:
+        emit("sync_adj", 10 + int(55 * cur / tot),
+             f"除权因子批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
+
+    # 按需窗口: 钳到本地日K起点。前复权里早于任一根已存K线的事件在
+    # cum/total 两侧同时出现、恰好抵消, 对所有已存价格零影响 (见
+    # indicators.pipeline._apply_adj_factor) — 拉它们只会为远古事件
+    # 逐只回补历史K线, 全市场一次曾多花 ~15 分钟。
+    store_min = repo.earliest_daily_date()
+    start = datetime(store_min.year, store_min.month, store_min.day) if store_min else None
+    window_label = f"自 {store_min.isoformat()}" if store_min else "全历史"
+    logger.info(
+        "standalone adj sync: %d symbols, event window %s",
+        len(universe), window_label,
+    )
+    emit("sync_adj", 10, f"获取除权因子 [{window_label}, {len(universe)} 只]…")
+    written_adj, affected = kline_sync.sync_adj_factor(
+        universe, repo, capset,
+        start_time=start, end_time=datetime.now(),
+        on_chunk_done=_adj_chunk_progress,
+    )
+    affected = sorted(set(affected))
+    _refresh_single_view(repo, "adj_factor")
+    emit("sync_adj", 65,
+         f"除权因子完成,新增 {written_adj} 行,因子变更 {len(affected)} 只")
+    _invalidate("adj_factor")
+
+    # enriched 局部重算: 与管道「无新日期 + 有新除权因子」分支同语义 (只重算受影响个股)
+    enriched_dir = repo.store.data_dir / "kline_daily_enriched"
+    enriched_exists = enriched_dir.exists() and any(enriched_dir.glob("date=*"))
+    written_enriched = 0
+    if affected and enriched_exists:
+        def _enriched_batch_progress(cur: int, tot: int) -> None:
+            emit("compute_enriched", 65 + int(30 * cur / tot),
+                 f"计算指标 批次 {cur}/{tot}", stage_pct=int(100 * cur / tot), skip_log=True)
+
+        emit("compute_enriched", 65, f"增量计算 enriched ({len(affected)} 只个股)…")
+        logger.info("compute_enriched: adj_factor incremental (standalone), %d symbols", len(affected))
+        written_enriched = run_pipeline(symbols=affected, on_batch_done=_enriched_batch_progress)
+        _refresh_single_view(repo, "kline_enriched")
+        emit("compute_enriched", 95, f"enriched 完成,{len(affected)} 只个股")
+        _invalidate("enriched")
+    elif affected:
+        logger.info("standalone adj sync: enriched 未构建, 跳过局部重算 (交由盘后管道全量计算)")
+
+    emit("done", 100, "完成")
+    return {
+        "universe_size": len(universe),
+        "adj_written": written_adj,
+        "adj_factor_symbols": len(affected),
+        "enriched_days": written_enriched,
+        "skipped_stages": [],
+    }
 
 
 def warn_if_enriched_too_thin(data_dir: Path) -> int:

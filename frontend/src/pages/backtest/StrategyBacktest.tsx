@@ -686,7 +686,7 @@ function Stat({ label, value, color }: { label: ReactNode; value: string; color?
     <div className="min-w-0 rounded-btn border border-border/70 bg-elevated/70 px-3 py-2">
       <div className="text-[11px] text-secondary">{label}</div>
       <div
-        className={`mt-1 break-words font-mono font-semibold leading-tight tracking-tight num ${compact ? 'text-xs xl:text-sm' : 'text-sm xl:text-base'}`}
+        className={`mt-1 break-words font-mono font-semibold leading-tight tracking-tight num ${compact ? 'text-xs xl:text-sm' : 'text-sm xl:text-[16px] xl:leading-6'}`}
         style={{ color: color ?? 'inherit' }}
         title={value}
       >
@@ -744,6 +744,19 @@ function StrategyParamInput({ param, value, onChange }: {
         <select value={value ?? param.default} onChange={e => onChange(e.target.value)} className={INPUT_CLS}>
           {(param.options ?? []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
         </select>
+      </label>
+    )
+  }
+  if (param.type === 'string') {
+    return (
+      <label className="block">
+        <span className="mb-1 block text-[11px] text-secondary">{param.label}</span>
+        <input
+          type="text"
+          value={value ?? param.default ?? ''}
+          onChange={e => onChange(e.target.value)}
+          className={INPUT_CLS}
+        />
       </label>
     )
   }
