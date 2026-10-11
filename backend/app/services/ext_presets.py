@@ -44,6 +44,13 @@ _FUYAO_CONCURRENCY = 8
 _FUYAO_TIMEOUT_S = 20.0
 _FUYAO_BOARD_RETRIES = 1
 
+# 2026-10 换源前的出厂种子 URL (自维护导出接口, 已下线)。仅当现有配置的
+# pull.url 精确等于旧出厂值 (未被用户改过) 时, 启动迁移为 fuyao 配方。
+_LEGACY_PULL_URLS = {
+    "ext_gn_ths": "https://shy313.com/api/plugins/market_flow/exports/ths-concepts",
+    "ext_hy_ths": "https://shy313.com/api/plugins/market_flow/exports/ths-industries",
+}
+
 
 # ---------------------------------------------------------------------------
 # 预设定义: 字段结构 + 拉取配方
@@ -321,7 +328,8 @@ async def ensure_builtin_presets(data_dir: Path) -> None:
     网络请求阻塞, 也避免「自动拉取」与「用户自主控制」的预期冲突。
 
     安全保证:
-      - 已存在则完全跳过 (绝不覆盖用户数据)
+      - 已存在则跳过创建 (绝不覆盖用户数据); 唯一例外: pull.url 仍是旧出厂
+        种子值时同步为 fuyao 配方并回收 enabled (用户自定义过 URL 的配置不碰)
       - 只写 config.json, 失败只记 warning 不阻断启动
     """
     store = ExtConfigStore(data_dir)
@@ -329,7 +337,26 @@ async def ensure_builtin_presets(data_dir: Path) -> None:
     for config in _presets():
         existing = store.get(config.id)
         if existing is not None:
-            # 用户已有此表 (老用户 / 自己重建过) → 一律不动
+            # 用户已有此表 (老用户 / 自己重建过) → 不重建; 但若拉取配方还停在
+            # 换源前的出厂种子 URL, 定向迁移到 fuyao (避免 UI 显示已下线的旧源)。
+            legacy = _LEGACY_PULL_URLS.get(config.id)
+            factory = config.pull.url if config.pull is not None else None
+            if (
+                existing.pull is not None
+                and factory is not None
+                and existing.pull.url in (legacy, factory)
+            ):
+                # url 等于旧出厂种子值或当前出厂值 → 视为出厂配置 (非用户自定义):
+                # 同步为 fuyao 配方, 并回收 enabled (#199 之前出厂遗留 True; 换源后
+                # 通用定时拉取既不带 fuyao 鉴权也不做板块反转, 只会每周期失败报错;
+                # fetch_preset 手动获取路径不受 enabled 影响)。用户自定义 URL 不碰。
+                existing.pull.url = factory
+                existing.pull.enabled = False
+                store.upsert(existing)
+                logger.info(
+                    "内置扩展表 %s 拉取配方已同步为 fuyao (出厂态回收为手动获取)",
+                    config.id,
+                )
             continue
         try:
             store.upsert(config)

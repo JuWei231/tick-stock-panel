@@ -44,11 +44,12 @@ def test_ensure_builtin_presets_writes_disabled_configs(tmp_path: Path) -> None:
 
 
 def test_ensure_builtin_presets_keeps_existing_user_config(tmp_path: Path) -> None:
-    """老用户/已存在的配置一律不动: 即使保留 enabled=True 也不被覆盖。"""
+    """用户自定义配置 (URL 改过) 一律不动: 即使保留 enabled=True 也不被覆盖。"""
     asyncio.run(ensure_builtin_presets(tmp_path))
     store = ExtConfigStore(tmp_path)
     config = store.get("ext_gn_ths")
     assert config is not None and config.pull is not None
+    config.pull.url = "https://example.com/my-own-concepts"
     config.pull.enabled = True
     store.upsert(config)
 
@@ -56,4 +57,67 @@ def test_ensure_builtin_presets_keeps_existing_user_config(tmp_path: Path) -> No
 
     refreshed = ExtConfigStore(tmp_path).get("ext_gn_ths")
     assert refreshed is not None and refreshed.pull is not None
-    assert refreshed.pull.enabled is True, "已存在配置被静默改写, 违反「绝不覆盖」原则"
+    assert refreshed.pull.url == "https://example.com/my-own-concepts"
+    assert refreshed.pull.enabled is True, "自定义配置被静默改写, 违反「绝不覆盖」原则"
+
+
+def test_ensure_builtin_presets_migrates_legacy_seed_url(tmp_path: Path) -> None:
+    """pull.url 仍是换源前出厂种子值 (shy313 导出) → 启动定向迁移为 fuyao 配方。
+
+    迁移动 url 与 enabled: enabled=True 是 #199 之前出厂遗留, 换源后通用定时
+    拉取无法携带 fuyao 鉴权/反转 (只会周期性失败), 一并回收到手动获取契约。
+    其余字段 (如用户改过的拉取周期) 保持原样。
+    """
+    from app.services.ext_presets import _LEGACY_PULL_URLS, _concept_preset
+
+    asyncio.run(ensure_builtin_presets(tmp_path))
+    store = ExtConfigStore(tmp_path)
+    config = store.get("ext_gn_ths")
+    assert config is not None and config.pull is not None
+    config.pull.url = _LEGACY_PULL_URLS["ext_gn_ths"]
+    config.pull.enabled = True  # #199 之前出厂默认值
+    config.pull.schedule_minutes = 720  # 用户改过的周期, 迁移不得触碰
+    store.upsert(config)
+
+    asyncio.run(ensure_builtin_presets(tmp_path))
+
+    refreshed = ExtConfigStore(tmp_path).get("ext_gn_ths")
+    assert refreshed is not None and refreshed.pull is not None
+    expected = _concept_preset().pull
+    assert expected is not None
+    assert refreshed.pull.url == expected.url, "旧出厂种子 URL 未迁移到 fuyao 配方"
+    assert refreshed.pull.enabled is False, "定时拉取残留 enabled=True, 换源后只会周期性失败"
+    assert refreshed.pull.schedule_minutes == 720, "迁移不应重置用户改过的周期"
+
+
+def test_ensure_builtin_presets_reclaims_enabled_on_factory_url(tmp_path: Path) -> None:
+    """url 已是当前出厂配方但 enabled=True (换源中间态/旧默认) → 同样回收为 False。"""
+    asyncio.run(ensure_builtin_presets(tmp_path))
+    store = ExtConfigStore(tmp_path)
+    config = store.get("ext_hy_ths")
+    assert config is not None and config.pull is not None
+    config.pull.enabled = True  # 上一版迁移只换了 url 未回收 enabled 的中间态
+    store.upsert(config)
+
+    asyncio.run(ensure_builtin_presets(tmp_path))
+
+    refreshed = ExtConfigStore(tmp_path).get("ext_hy_ths")
+    assert refreshed is not None and refreshed.pull is not None
+    assert refreshed.pull.enabled is False, "出厂 URL + enabled=True 未回收, 定时拉取将持续失败"
+
+
+def test_ensure_builtin_presets_keeps_custom_url(tmp_path: Path) -> None:
+    """用户自定义过 pull.url (不等于旧出厂值) → 一律不迁移。"""
+    asyncio.run(ensure_builtin_presets(tmp_path))
+    store = ExtConfigStore(tmp_path)
+    config = store.get("ext_hy_ths")
+    assert config is not None and config.pull is not None
+    custom = "https://example.com/my-own-industries"
+    config.pull.url = custom
+    store.upsert(config)
+
+    asyncio.run(ensure_builtin_presets(tmp_path))
+
+    refreshed = ExtConfigStore(tmp_path).get("ext_hy_ths")
+    assert refreshed is not None and refreshed.pull is not None
+    assert refreshed.pull.url == custom, "自定义 URL 被迁移改写, 违反「绝不覆盖」原则"
