@@ -49,7 +49,6 @@ const BUILTIN_PAGES: NavEntry[] = [
   { id: '/lots', label: '持仓提醒', type: 'builtin', visible: true },
   { id: '/paper', label: '模拟盘', type: 'builtin', visible: true },
   { id: '/signals', label: '信号库', type: 'builtin', visible: true },
-  { id: '/review', label: '复盘', type: 'builtin', visible: true },
   { id: '/indices', label: '指数', type: 'builtin', visible: true },
   { id: '/data', label: '数据', type: 'builtin', visible: true },
 ]

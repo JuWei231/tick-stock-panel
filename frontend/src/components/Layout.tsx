@@ -58,7 +58,6 @@ import {
   IconLots,
   IconPaper,
   IconSignals,
-  IconReview,
   IconIndices,
   IconData,
   type BrandIconProps,
@@ -107,7 +106,6 @@ const nav = [
   { to: '/lots',             label: '持仓提醒', icon: IconLots },
   { to: '/paper',            label: '模拟盘',   icon: IconPaper },
   { to: '/signals',          label: '信号库',   icon: IconSignals },
-  { to: '/review',           label: '复盘',     icon: IconReview },
   { to: '/indices',          label: '指数',     icon: IconIndices },
   { to: '/data',             label: '数据',     icon: IconData },
 ] as const

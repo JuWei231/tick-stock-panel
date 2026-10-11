@@ -1,5 +1,6 @@
-import type { ComponentType } from 'react'
+import type { ComponentType, ReactNode } from 'react'
 import type { LucideIcon } from 'lucide-react'
+import type { BrandIconProps } from '@/components/BrandIcons'
 
 export const FRONTEND_EXTENSION_API_VERSION = 1 as const
 
@@ -44,7 +45,8 @@ export interface FrontendExtensionNavigation {
   id: string
   routeId: string
   label: string
-  icon: LucideIcon
+  /** lucide 图标或侧栏品牌图标族 (BrandIcons) — 与 Layout NavIcon 同口径 */
+  icon: LucideIcon | ((props: BrandIconProps) => ReactNode)
   order?: number
   badge?: string
 }
