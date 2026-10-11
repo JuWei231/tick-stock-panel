@@ -5,6 +5,8 @@
   - 仅在本模块做「接口结构 → 本地 schema」的转换
   - 「已存在则跳过」: 绝不覆盖用户已有数据, 老用户零影响
   - 拉取失败只记 warning, 不阻断启动 (保持「没数据也能跑」)
+  - 出厂【不预置 pull 拉取配方】: 数据获取只在概念/行业页手动触发, 走
+    fetch_preset 专属路径 (fuyao 鉴权 + 板块反转), 不经通用拉取。
 
 种子数据来源 (概念/行业共用 fuyao 同花顺指数接口, 2026-10 起替代自维护导出):
   - 板块清单: /api/a-share-index/catalog/ths-index-list (tag=cn_concept / industry)
@@ -29,7 +31,6 @@ from app.services.ext_data import (
     ExtConfig,
     ExtConfigStore,
     ExtField,
-    PullConfig,
     rows_to_parquet,
 )
 
@@ -44,11 +45,18 @@ _FUYAO_CONCURRENCY = 8
 _FUYAO_TIMEOUT_S = 20.0
 _FUYAO_BOARD_RETRIES = 1
 
-# 2026-10 换源前的出厂种子 URL (自维护导出接口, 已下线)。仅当现有配置的
-# pull.url 精确等于旧出厂值 (未被用户改过) 时, 启动迁移为 fuyao 配方。
-_LEGACY_PULL_URLS = {
-    "ext_gn_ths": "https://shy313.com/api/plugins/market_flow/exports/ths-concepts",
-    "ext_hy_ths": "https://shy313.com/api/plugins/market_flow/exports/ths-industries",
+# 历代已废弃的出厂 pull 配方值: 换源前的自维护种子源 → 过渡期的 fuyao 目录标记。
+# 仅当现有配置的 pull.url 精确命中其中之一 (未被用户改过) 时, 启动把 pull
+# 整体回收为 None; 用户自定义过 URL 的拉取配置一律不碰。
+_RETIRED_FACTORY_URLS: dict[str, tuple[str, ...]] = {
+    "ext_gn_ths": (
+        "https://shy313.com/api/plugins/market_flow/exports/ths-concepts",
+        f"{_FUYAO_BASE}{_FUYAO_CATALOG_PATH}?tag=cn_concept",
+    ),
+    "ext_hy_ths": (
+        "https://shy313.com/api/plugins/market_flow/exports/ths-industries",
+        f"{_FUYAO_BASE}{_FUYAO_CATALOG_PATH}?tag=industry",
+    ),
 }
 
 
@@ -73,18 +81,9 @@ def _concept_preset() -> ExtConfig:
             ExtField("股票简称", "string", "股票简称"),
             ExtField("所属概念", "string", "所属概念"),
         ],
-        description="同花顺概念分类 (fuyao 同花顺指数接口; 启动仅创建配置, 在概念/行业页手动获取)",
+        description="同花顺概念分类 (fuyao 同花顺指数接口; 在概念/行业页手动获取)",
         symbol_map={"type": "mapped", "col": "股票代码"},
         code_map={"type": "computed", "from": "symbol", "method": "strip_exchange"},
-        pull=PullConfig(
-            # url 仅作配方标识: 实际拉取走 fetch_preset 的 fuyao 反转路径
-            url=f"{_FUYAO_BASE}{_FUYAO_CATALOG_PATH}?tag=cn_concept",
-            method="GET",
-            schedule_minutes=1440,
-            # enabled=False: ensure_builtin_presets 承诺启动不拉取, PullScheduler
-            # 只调度 enabled 配置; 手动获取走 fetch_preset 独立路径不受影响 (#199)
-            enabled=False,
-        ),
     )
 
 
@@ -106,16 +105,9 @@ def _industry_preset() -> ExtConfig:
             ExtField("股票简称", "string", "股票简称"),
             ExtField("所属同花顺行业", "string", "所属同花顺行业"),
         ],
-        description="同花顺行业分类 (fuyao 同花顺指数接口, 扁平板块无层级; 启动仅创建配置, 在概念/行业页手动获取)",
+        description="同花顺行业分类 (fuyao 同花顺指数接口, 扁平板块无层级; 在概念/行业页手动获取)",
         symbol_map={"type": "mapped", "col": "股票代码"},
         code_map={"type": "computed", "from": "symbol", "method": "strip_exchange"},
-        pull=PullConfig(
-            url=f"{_FUYAO_BASE}{_FUYAO_CATALOG_PATH}?tag=industry",
-            method="GET",
-            schedule_minutes=1440,
-            # 同概念 preset: 出厂禁用, 避免启动即网络拉取 (#199)
-            enabled=False,
-        ),
     )
 
 
@@ -322,14 +314,16 @@ def get_preset(config_id: str) -> ExtConfig | None:
 
 
 async def ensure_builtin_presets(data_dir: Path) -> None:
-    """启动时: 为缺失的预设创建 config.json (含 pull 配置), 但【不拉取数据】。
+    """启动时: 为缺失的预设创建 config.json (不预置 pull 配方), 且【不拉取数据】。
 
-    设计: 数据获取改为用户在概念/行业页手动点「获取数据」触发, 避免启动时
-    网络请求阻塞, 也避免「自动拉取」与「用户自主控制」的预期冲突。
+    设计: 数据获取只在概念/行业页手动点「获取数据」触发 (走 fetch_preset 的
+    fuyao 鉴权 + 板块反转专属路径), 出厂不写通用拉取配方 — 通用路径对 fuyao
+    既无鉴权也无反转, 预置只会误导与周期性失败。
 
     安全保证:
-      - 已存在则跳过创建 (绝不覆盖用户数据); 唯一例外: pull.url 仍是旧出厂
-        种子值时同步为 fuyao 配方并回收 enabled (用户自定义过 URL 的配置不碰)
+      - 已存在则跳过创建 (绝不覆盖用户数据); 唯一例外: pull.url 命中历代
+        已废弃的出厂配方值时, 把 pull 整体回收为 None (用户自定义过 URL
+        的拉取配置不碰)
       - 只写 config.json, 失败只记 warning 不阻断启动
     """
     store = ExtConfigStore(data_dir)
@@ -337,24 +331,27 @@ async def ensure_builtin_presets(data_dir: Path) -> None:
     for config in _presets():
         existing = store.get(config.id)
         if existing is not None:
-            # 用户已有此表 (老用户 / 自己重建过) → 不重建; 但若拉取配方还停在
-            # 换源前的出厂种子 URL, 定向迁移到 fuyao (避免 UI 显示已下线的旧源)。
-            legacy = _LEGACY_PULL_URLS.get(config.id)
-            factory = config.pull.url if config.pull is not None else None
+            changed = False
+            retired = _RETIRED_FACTORY_URLS.get(config.id, ())
+            if existing.pull is not None and existing.pull.url in retired:
+                # 命中历代出厂配方 (自维护种子源 / 过渡期 fuyao 目录标记) →
+                # 回收为无拉取配置; fetch_preset 手动获取不读 pull, 不受影响。
+                existing.pull = None
+                changed = True
+            # description 以出厂前缀开头 (如「同花顺概念分类」) → 视为历代出厂
+            # 写入的文案, 同步为当前出厂版; 旧文案如「首次启动自动拉取」已与
+            # 实际行为不符。description 是纯展示字段, 前缀命中即回收。
             if (
-                existing.pull is not None
-                and factory is not None
-                and existing.pull.url in (legacy, factory)
+                existing.description != config.description
+                and config.description
+                and existing.description.startswith(config.description.split(" (", 1)[0])
             ):
-                # url 等于旧出厂种子值或当前出厂值 → 视为出厂配置 (非用户自定义):
-                # 同步为 fuyao 配方, 并回收 enabled (#199 之前出厂遗留 True; 换源后
-                # 通用定时拉取既不带 fuyao 鉴权也不做板块反转, 只会每周期失败报错;
-                # fetch_preset 手动获取路径不受 enabled 影响)。用户自定义 URL 不碰。
-                existing.pull.url = factory
-                existing.pull.enabled = False
+                existing.description = config.description
+                changed = True
+            if changed:
                 store.upsert(existing)
                 logger.info(
-                    "内置扩展表 %s 拉取配方已同步为 fuyao (出厂态回收为手动获取)",
+                    "内置扩展表 %s 已回收废弃的出厂配置 (手动获取不受影响)",
                     config.id,
                 )
             continue
