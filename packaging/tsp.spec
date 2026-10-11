@@ -70,14 +70,14 @@ hiddenimports += collect_submodules("polars")
 # 注: 其他内置插件如需进桌面包, 仿照 fuyao 双声明添加。
 datas += [
     (str(ROOT / "backend" / "app" / "plugins" / "fuyao" / "plugin.yaml"), "app/plugins/fuyao"),
-    (str(ROOT / "backend" / "app" / "plugins" / "tdx" / "plugin.yaml"), "app/plugins/tdx"),
+    (str(ROOT / "backend" / "app" / "plugins" / "tdx" / "plugin.yaml"), "app/plugins/tdxquant"),
 ]
 hiddenimports += [
     "app.plugins.fuyao.provider",
     "app.plugins.fuyao.client",
-    "app.plugins.tdx.provider",
-    "app.plugins.tdx.client",
-    "app.plugins.tdx.probe",
+    "app.plugins.tdxquant.provider",
+    "app.plugins.tdxquant.client",
+    "app.plugins.tdxquant.probe",
 ]
 
 # ── 后端源码扩展 (app/custom/*) ──────────────────────────────────────

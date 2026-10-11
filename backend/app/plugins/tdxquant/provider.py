@@ -1,4 +1,4 @@
-"""tdx(通达信量化数据服务)内置数据源 provider。
+"""TdxQuant(通达信量化数据服务)内置数据源 provider。
 
 方法签名对齐 custom.GenericHTTPProvider(service 分流点按这套签名调用),
 插件被 loader 扫描注册后, 各 service 无需改动即可路由。
@@ -32,15 +32,15 @@ from zoneinfo import ZoneInfo
 
 import polars as pl
 
-from app.plugins.tdx.client import SNAPSHOT_FIELDS, TdxClient, TdxError
+from app.plugins.tdxquant.client import SNAPSHOT_FIELDS, TdxQuantClient, TdxQuantError
 
 logger = logging.getLogger(__name__)
 
 # 只声明真实提供的数据集; 其余数据集 provider_has_dataset 返回 False → 回退 tickflow
 _DATASETS = ("realtime", "depth5", "daily", "adj_factor")
 
-API_KEY_ENV = "TDX_API_KEY"
-SECRETS_FIELD = "tdx_api_key"  # UI 配置的 Key 存 secrets.json, 优先级高于 .env
+API_KEY_ENV = "TDXQUANT_API_KEY"
+SECRETS_FIELD = "tdxquant_api_key"  # UI 配置的 Key 存 secrets.json, 优先级高于 .env
 
 _SNAPSHOT_BATCH = 600  # 实测 600 只/批正常返回
 _HIST_INTERVAL_S = 0.08  # 单标的 K 线/事件请求节流
@@ -90,17 +90,17 @@ def availability() -> tuple[bool, str]:
 
 def probe_api_key(api_key: str) -> tuple[bool, str]:
     """候选 Key 独立子进程实探(先探后存, 对齐 /tickflow-key 语义)。不落盘。"""
-    from app.plugins.tdx import probe
+    from app.plugins.tdxquant import probe
 
     return probe.run(api_key)
 
 
 @dataclass
-class _TdxConfig:
+class _TdxQuantConfig:
     """轻量 config shim, 让 custom loader 的 provider_has_dataset 能识别本 provider。"""
 
     name: str = "tdx"
-    display_name: str = "tdx(通达信)"
+    display_name: str = "TdxQuant"
     datasets: dict = field(default_factory=lambda: dict.fromkeys(_DATASETS))
     path: None = None
     builtin: bool = True
@@ -235,15 +235,15 @@ def _bars_for_window(span_days: int) -> int:
     return max(30, min(_HIST_MAX_COUNT, int(span_days * 5 / 7) + 20))
 
 
-class TdxProvider:
+class TdxQuantProvider:
     """tdx 数据源。realtime = 五市场全 A 快照批拉; depth5 复用同一快照的五档数组。"""
 
-    name = "tdx"
+    name = "tdxquant"
     builtin = True
 
     def __init__(self) -> None:
-        self.config = _TdxConfig()
-        self._client: TdxClient | None = None
+        self.config = _TdxQuantConfig()
+        self._client: TdxQuantClient | None = None
 
     def close(self) -> None:  # loader.load_all 重建注册表时会对每个 provider 调 close
         if self._client is not None:
@@ -251,9 +251,9 @@ class TdxProvider:
                 self._client.close()
             self._client = None
 
-    def _get_client(self) -> TdxClient:
+    def _get_client(self) -> TdxQuantClient:
         if self._client is None:
-            self._client = TdxClient(api_key=get_api_key())
+            self._client = TdxQuantClient(api_key=get_api_key())
         return self._client
 
     # ---- realtime ----
@@ -262,8 +262,8 @@ class TdxProvider:
         client = self._get_client()
         try:
             universe = client.stock_universe()
-        except TdxError as e:
-            logger.warning("tdx 股票池枚举失败: %s", e)
+        except TdxQuantError as e:
+            logger.warning("TdxQuant 股票池枚举失败: %s", e)
             return []
 
         fallback_ms = int(time.time() * 1000)
@@ -273,9 +273,9 @@ class TdxProvider:
             codes = universe[i : i + _SNAPSHOT_BATCH]
             try:
                 rows = client.snapshot_batch(codes)
-            except TdxError as e:
+            except TdxQuantError as e:
                 failed_batches += 1
-                logger.warning("tdx 快照批次失败(%d 只, 第 %d 批): %s", len(codes), i // _SNAPSHOT_BATCH + 1, e)
+                logger.warning("TdxQuant 快照批次失败(%d 只, 第 %d 批): %s", len(codes), i // _SNAPSHOT_BATCH + 1, e)
                 continue
             for code, row in rows.items():
                 rec = _map_snapshot_row(code, row, fallback_ms)
@@ -284,12 +284,12 @@ class TdxProvider:
                 else:
                     dropped += 1
         if failed_batches:
-            logger.warning("tdx 快照 %d/%d 批失败, 本轮仅返回 %d 条",
+            logger.warning("TdxQuant 快照 %d/%d 批失败, 本轮仅返回 %d 条",
                            failed_batches, math.ceil(len(universe) / _SNAPSHOT_BATCH), len(records))
         if not records and universe:
-            logger.warning("tdx 实时行情本轮 0 条(请求 %d 只), 疑似连接或协议异常", len(universe))
+            logger.warning("TdxQuant 实时行情本轮 0 条(请求 %d 只), 疑似连接或协议异常", len(universe))
         elif dropped:
-            logger.info("tdx 实时行情拉取完成: %d 条(丢弃 %d 行无价快照)", len(records), dropped)
+            logger.info("TdxQuant 实时行情拉取完成: %d 条(丢弃 %d 行无价快照)", len(records), dropped)
         return records
 
     def get_realtime_indices(self, symbols: list[str]) -> list[dict] | None:
@@ -309,8 +309,8 @@ class TdxProvider:
             return []
         try:
             rows = self._get_client().snapshot_batch(wanted)
-        except TdxError as e:
-            logger.warning("tdx 指数行情拉取失败: %s", e)
+        except TdxQuantError as e:
+            logger.warning("TdxQuant 指数行情拉取失败: %s", e)
             return None
         fallback_ms = int(time.time() * 1000)
         records = []
@@ -318,7 +318,7 @@ class TdxProvider:
             rec = _map_snapshot_row(code, row, fallback_ms)
             if rec is not None:
                 records.append(rec)
-        logger.info("tdx 指数行情拉取完成: %d 条(请求 %d 只)", len(records), len(wanted))
+        logger.info("TdxQuant 指数行情拉取完成: %d 条(请求 %d 只)", len(records), len(wanted))
         return records
 
     # ---- daily ----
@@ -364,12 +364,12 @@ class TdxProvider:
         for i, symbol in enumerate(symbols):
             try:
                 raw = client.his_dats(symbol, end_d, count)
-            except TdxError as e:
-                logger.warning("tdx 日K %s 拉取失败: %s", symbol, e)
+            except TdxQuantError as e:
+                logger.warning("TdxQuant 日K %s 拉取失败: %s", symbol, e)
                 raw = {}
             rows = _kline_rows(symbol, raw, start_d, end_d)
             if rows and rows[0]["date"] is not None and start_d is not None and rows[0]["date"] > start_d:
-                logger.info("tdx 日K %s: count=%d 仅覆盖到 %s(窗口起点 %s 之前的数据不在返回内)",
+                logger.info("TdxQuant 日K %s: count=%d 仅覆盖到 %s(窗口起点 %s 之前的数据不在返回内)",
                             symbol, count, rows[0]["date"], start_d)
             yield pl.DataFrame(rows, schema=_DAILY_SCHEMA)
             if on_chunk_done:
@@ -402,8 +402,8 @@ class TdxProvider:
         for i, symbol in enumerate(symbols):
             try:
                 events = client.divid_factors(symbol, start_d, end_d + timedelta(days=_ADJ_FUTURE_DAYS))
-            except TdxError as e:
-                logger.warning("tdx 除权事件 %s 拉取失败: %s", symbol, e)
+            except TdxQuantError as e:
+                logger.warning("TdxQuant 除权事件 %s 拉取失败: %s", symbol, e)
                 events = []
             events = [ev for ev in events if _compact_date(ev.get("Date")) is not None]
             if events:
@@ -422,12 +422,12 @@ class TdxProvider:
             .sort(["symbol", "trade_date"])
         )
 
-    def _close_map(self, client: TdxClient, symbol: str, start_d: date, end_d: date) -> dict[date, float]:
+    def _close_map(self, client: TdxQuantClient, symbol: str, start_d: date, end_d: date) -> dict[date, float]:
         """一次 count 模式日K → {交易日: 原始收盘价}(推导前收盘与自检共用)。"""
         try:
             raw = client.his_dats(symbol, end_d, _bars_for_window((end_d - start_d).days))
-        except TdxError as e:
-            logger.warning("tdx 除权配价 %s 日K失败: %s", symbol, e)
+        except TdxQuantError as e:
+            logger.warning("TdxQuant 除权配价 %s 日K失败: %s", symbol, e)
             return {}
         out: dict[date, float] = {}
         dates = raw.get("Date") or []
@@ -462,7 +462,7 @@ class TdxProvider:
             p = closes[prev_days[-1]]
             ref = _ref_price(p, dividend, bonus, allot, allot_price or 0.0)
             if ref is None or ref <= 0:
-                logger.warning("tdx 除权因子: %s %s 参考价无法计算(P=%s D=%s S=%s AR=%s AP=%s), 跳过",
+                logger.warning("TdxQuant 除权因子: %s %s 参考价无法计算(P=%s D=%s S=%s AR=%s AP=%s), 跳过",
                                symbol, exd, p, dividend, bonus, allot, allot_price)
                 continue
             factor = p / ref
@@ -470,7 +470,7 @@ class TdxProvider:
             if ex_days:  # 涨跌停自检: 错误因子会令复权后除权日涨跌幅超出板限
                 ret = closes[ex_days[0]] / (p / factor) - 1.0
                 if abs(ret) > _price_limit(symbol) + 0.02:
-                    logger.warning("tdx 除权因子自检剔除 %s %s: 复权后除权日涨跌幅 %.1f%% 超出涨跌停",
+                    logger.warning("TdxQuant 除权因子自检剔除 %s %s: 复权后除权日涨跌幅 %.1f%% 超出涨跌停",
                                    symbol, exd, ret * 100)
                     continue
             rows.append({
@@ -490,8 +490,8 @@ class TdxProvider:
             batch = symbols[i : i + _SNAPSHOT_BATCH]
             try:
                 rows = client.snapshot_batch(batch)
-            except TdxError as e:
-                logger.warning("tdx 五档批次失败(第 %d 批): %s", i // _SNAPSHOT_BATCH + 1, e)
+            except TdxQuantError as e:
+                logger.warning("TdxQuant 五档批次失败(第 %d 批): %s", i // _SNAPSHOT_BATCH + 1, e)
                 continue
             for code, row in rows.items():
                 entry = self._depth_entry(row, fallback_ms)
@@ -537,7 +537,7 @@ class TdxProvider:
                     df = self.get_daily(syms, datetime.now() - timedelta(days=30), datetime.now())
                 else:
                     df = self.get_adj_factors(syms, datetime.now() - timedelta(days=365), datetime.now())
-            except TdxError as e:
+            except TdxQuantError as e:
                 return {"provider": self.name, "dataset": dataset, "rows": 0, "error": str(e)}
             head = df.head(5).to_dicts()
             for row in head:  # date/datetime → ISO 字符串, 保证 JSON 可序列化
@@ -550,7 +550,7 @@ class TdxProvider:
             syms = [s for s in (symbols or [])][:5] or ["600519.SH", "000001.SZ"]
             try:
                 rows = self._get_client().snapshot_batch(syms)
-            except TdxError as e:
+            except TdxQuantError as e:
                 return {"provider": self.name, "dataset": dataset, "rows": 0, "error": str(e)}
             fallback_ms = int(time.time() * 1000)
             if dataset == "realtime":
@@ -568,7 +568,7 @@ class TdxProvider:
 
 __all__ = [
     "API_KEY_ENV",
-    "TdxProvider",
+    "TdxQuantProvider",
     "availability",
     "get_api_key",
     "probe_api_key",

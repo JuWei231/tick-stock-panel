@@ -30,7 +30,7 @@ from pathlib import Path
 key = os.environ.pop("TDX_PROBE_CANDIDATE_KEY", "")
 tmp = Path(tempfile.mkdtemp(prefix="tdx_probe_"))
 try:
-    from app.plugins.tdx import client as tc
+    from app.plugins.tdxquant import client as tc
 
     dll = tc.materialize_lib(key, tmp)
     os.environ[tc.LIB_ENV] = str(dll)

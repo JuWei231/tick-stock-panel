@@ -33,7 +33,7 @@ def test_spec_declares_builtin_plugin_fuyao():
 
 def test_spec_declares_builtin_plugin_tdx():
     """tdx 插件双声明不被回归 (与 fuyao 同一处理方式; probe 子进程入口也要可导入)。"""
-    assert "app.plugins.tdx.provider" in SPEC_CODE
-    assert "app.plugins.tdx.client" in SPEC_CODE
-    assert "app.plugins.tdx.probe" in SPEC_CODE
-    assert "app/plugins/tdx" in SPEC_CODE
+    assert "app.plugins.tdxquant.provider" in SPEC_CODE
+    assert "app.plugins.tdxquant.client" in SPEC_CODE
+    assert "app.plugins.tdxquant.probe" in SPEC_CODE
+    assert "app/plugins/tdxquant" in SPEC_CODE

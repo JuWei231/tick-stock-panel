@@ -1,6 +1,6 @@
-"""TdxProvider 契约与单位标准化测试。
+"""TdxQuantProvider 契约与单位标准化测试。
 
-不依赖真实网络与 tdxaidata 安装: 用假 TdxClient 返回样例快照/K线/除权事件,
+不依赖真实网络与 tdxaidata 安装: 用假 TdxQuantClient 返回样例快照/K线/除权事件,
 验证字段映射、单位口径 (CONTRIBUTING §3: 万元→元、股→手、每10股→每股、
 小数制涨跌幅)、lib 物化与 token 注入、重试语义、能力声明与设置页试拉。
 """
@@ -15,9 +15,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from app.plugins.tdx import client as tc
-from app.plugins.tdx import provider as tp
-from app.plugins.tdx.provider import TdxProvider
+from app.plugins.tdxquant import client as tc
+from app.plugins.tdxquant import provider as tp
+from app.plugins.tdxquant.provider import TdxQuantProvider
 
 _BEIJING = ZoneInfo("Asia/Shanghai")
 
@@ -69,8 +69,8 @@ class _FakeClient:
         return item
 
 
-def _provider(fake: _FakeClient) -> TdxProvider:
-    p = TdxProvider()
+def _provider(fake: _FakeClient) -> TdxQuantProvider:
+    p = TdxQuantProvider()
     p._client = fake
     return p
 
@@ -102,7 +102,7 @@ def _make_source_lib(root: Path) -> Path:
 
 def test_materialize_lib_writes_token_into_both_ini(tmp_path):
     src = _make_source_lib(tmp_path)
-    lib_root = tmp_path / "tdx_lib"
+    lib_root = tmp_path / "tdxquant_lib"
     dll = tc.materialize_lib("TDX-NEW-KEY", lib_root, source=src)
     assert dll.name in ("TdxAiData.dll", "libTdxAiData.so")
     assert (lib_root / "TdxAiData.dll").exists()
@@ -117,7 +117,7 @@ def test_materialize_lib_writes_token_into_both_ini(tmp_path):
 
 def test_materialize_lib_marker_skips_recopy(tmp_path, monkeypatch):
     src = _make_source_lib(tmp_path)
-    lib_root = tmp_path / "tdx_lib"
+    lib_root = tmp_path / "tdxquant_lib"
     tc.materialize_lib("TDX-KEY-A", lib_root, source=src)
 
     copies = []
@@ -145,7 +145,7 @@ def test_write_token_ini_adds_missing_section(tmp_path):
 
 # ---------------------------------------------------------------- client: 重试语义
 def _client_with_raw(monkeypatch, returns: list[object], sleep_log: list[float]):
-    c = object.__new__(tc.TdxClient)
+    c = object.__new__(tc.TdxQuantClient)
     c.api_key = "k"
     state = {"i": 0}
 
@@ -178,7 +178,7 @@ def test_raw_retries_transient_exception(monkeypatch):
 def test_raw_gives_up_on_persistent_none(monkeypatch):
     sleeps: list[float] = []
     c = _client_with_raw(monkeypatch, [None, None], sleeps)
-    with pytest.raises(tc.TdxError):
+    with pytest.raises(tc.TdxQuantError):
         c.his_dats("600519.SH", date(2026, 1, 10), 5)
 
 
@@ -269,7 +269,7 @@ def test_realtime_batches_and_merges(monkeypatch):
 
 def test_realtime_soft_fail_on_universe_error():
     fake = _FakeClient()
-    fake.universe_error = tc.TdxError("get_stock_list(上证主板): boom")
+    fake.universe_error = tc.TdxQuantError("get_stock_list(上证主板): boom")
     assert _provider(fake).get_realtime() == []
 
 
@@ -278,7 +278,7 @@ def test_realtime_isolates_failed_batch(monkeypatch):
     fake = _FakeClient()
     fake.universe = [f"6000{i:03d}.SH" for i in range(tp._SNAPSHOT_BATCH)] + ["000001.SZ"]
     fake.snapshot_results = [
-        tc.TdxError("snapshot_batch(600 只): invalid"),  # 首批失败被隔离
+        tc.TdxQuantError("snapshot_batch(600 只): invalid"),  # 首批失败被隔离
         {"000001.SZ": _snap_row(Now="11.59", LastClose="11.78")},
     ]
     records = _provider(fake).get_realtime()
@@ -296,7 +296,7 @@ def test_realtime_indices_maps_sh_index_code(monkeypatch):
 
 def test_realtime_indices_none_on_failure():
     fake = _FakeClient()
-    fake.snapshot_results = [tc.TdxError("snapshot_batch(1 只): down")]
+    fake.snapshot_results = [tc.TdxQuantError("snapshot_batch(1 只): down")]
     assert _provider(fake).get_realtime_indices(["000001.SH"]) is None
 
 
@@ -339,7 +339,7 @@ def test_daily_etf_asset_type_unsupported_reports_empty():
 
 def test_daily_symbol_error_isolated_but_iteration_continues():
     fake = _FakeClient()
-    fake.his["600000.SH"] = tc.TdxError("get_his_dats: invalid")
+    fake.his["600000.SH"] = tc.TdxQuantError("get_his_dats: invalid")
     fake.his["600001.SH"] = _his_raw()
     done: list[tuple[int, int]] = []
     df = _provider(fake).get_daily(
@@ -466,9 +466,9 @@ def test_availability_ok(monkeypatch):
 
 
 def test_datasets_declaration():
-    p = TdxProvider()
+    p = TdxQuantProvider()
     assert set(p.config.datasets) == {"realtime", "depth5", "daily", "adj_factor"}
-    assert p.name == "tdx" and p.config.builtin is True
+    assert p.name == "tdxquant" and p.config.builtin is True
     for absent in ("minute", "full_minute", "financial"):
         assert absent not in p.config.datasets  # 未声明 → provider_has_dataset False → 回退 tickflow
 
@@ -493,21 +493,21 @@ def test_loader_manifest_parses_and_entry_importable():
 
     from app.data_providers.custom import loader
 
-    manifest = loader.plugin_manifest("tdx")
+    manifest = loader.plugin_manifest("tdxquant")
     assert manifest is not None
-    assert manifest["name"] == "tdx"
+    assert manifest["name"] == "tdxquant"
     assert set(manifest["datasets"]) == {"realtime", "depth5", "daily", "adj_factor"}
     module_path, _, class_name = manifest["entry"].partition(":")
     provider_cls = getattr(import_module(module_path), class_name)
-    assert provider_cls.name == "tdx"
+    assert provider_cls.name == "tdxquant"
 
 
 def test_loader_probe_plugin_key_dispatch(monkeypatch):
     from app.data_providers.custom import loader
 
     monkeypatch.setattr(tp, "probe_api_key", lambda key: (key == "good", "ok" if key == "good" else "bad"))
-    assert loader.probe_plugin_key("tdx", "good") == (True, "ok")
-    assert loader.probe_plugin_key("tdx", "bad") == (False, "bad")
+    assert loader.probe_plugin_key("tdxquant", "good") == (True, "ok")
+    assert loader.probe_plugin_key("tdxquant", "bad") == (False, "bad")
 
 
 def test_close_resets_client():

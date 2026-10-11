@@ -1,4 +1,4 @@
-"""tdxaidata (通达信量化数据) 原生库封装。
+"""TdxQuant — tdxaidata (通达信量化数据) 原生库封装。
 
 tdxaidata 是 ctypes 包装的私有 TCP 协议客户端(aihs/aids.tdx.com.cn),
 DLL 与运行时 ini 随 wheel 分发。两个实测约束决定本模块的形状:
@@ -38,7 +38,7 @@ LIB_DLL_NAME = _DLL_BY_PLATFORM.get(sys.platform, "libTdxAiData.so")
 LIB_ENV = "TDX_AI_DATA_LIB"  # tdxaidata 读取: 指向 DLL 文件路径
 
 
-class TdxError(RuntimeError):
+class TdxQuantError(RuntimeError):
     """tdxaidata 调用失败(网络/参数/协议)。"""
 
 
@@ -90,9 +90,9 @@ def materialize_lib(api_key: str, lib_root: Path, source: Path | None = None) ->
     src = source or package_lib_dir()
     dll = src / LIB_DLL_NAME
     if not dll.exists():
-        raise TdxError(f"tdxaidata lib 缺少 {LIB_DLL_NAME}: {src}")
+        raise TdxQuantError(f"tdxaidata lib 缺少 {LIB_DLL_NAME}: {src}")
     lib_root.mkdir(parents=True, exist_ok=True)
-    marker = lib_root / ".tdx_lib_marker"
+    marker = lib_root / ".tdxquant_lib_marker"
     stat = dll.stat()
     want = f"{hashlib.sha256(api_key.encode()).hexdigest()}:{stat.st_mtime_ns}:{stat.st_size}"
     copied = lib_root / LIB_DLL_NAME
@@ -107,14 +107,14 @@ def materialize_lib(api_key: str, lib_root: Path, source: Path | None = None) ->
     return copied
 
 
-class TdxClient:
+class TdxQuantClient:
     """原生 tqs 的薄封装: 重试、股票池枚举、快照/日K/除权三个取数面。"""
 
     def __init__(self, api_key: str, lib_root: Path | None = None) -> None:
         from app.config import settings
 
         self.api_key = api_key
-        self._lib_root = lib_root or (settings.data_dir / "user_data" / "tdx_lib")
+        self._lib_root = lib_root or (settings.data_dir / "user_data" / "tdxquant_lib")
         dll = materialize_lib(api_key, self._lib_root)
         os.environ[LIB_ENV] = str(dll)
         from tdxaidata import tqs
@@ -141,7 +141,7 @@ class TdxClient:
             except Exception:  # noqa: BLE001 — 就绪探测, 任何异常都重试
                 pass
             time.sleep(1.2)
-        logger.warning("tdx 原生层预热未成功(%d 次), 首批业务调用可能失败重试", attempts)
+        logger.warning("TdxQuant 原生层预热未成功(%d 次), 首批业务调用可能失败重试", attempts)
 
     def close(self) -> None:  # 原生 DLL 常驻进程, 无可回收句柄; 保留接口对齐 loader
         self._universe.clear()
@@ -153,17 +153,17 @@ class TdxClient:
         空闲后首连 "Invalid server response" 实测重试即恢复; 坏代码等
         永久错误重试也只会快失败(返回 None), 不至于长阻塞。
         """
-        last: Exception = TdxError(f"{method} 未知失败")
+        last: Exception = TdxQuantError(f"{method} 未知失败")
         for attempt in range(_RETRIES):
             try:
                 out = self._tqs._clean(getattr(self._native_cls.get_instance(), method)(*args))
                 if out is not None:
                     return out
-                last = TdxError(f"{method} 返回空数据(第 {attempt + 1} 次)")
+                last = TdxQuantError(f"{method} 返回空数据(第 {attempt + 1} 次)")
                 if attempt + 1 >= _NONE_RETRIES:
                     break
             except Exception as exc:  # noqa: BLE001 — 原生 ctypes 层异常类型不可枚举
-                last = TdxError(f"{method}: {exc}")
+                last = TdxQuantError(f"{method}: {exc}")
             time.sleep(_RETRY_SLEEP_S)
         raise last
 
@@ -173,7 +173,7 @@ class TdxClient:
         now = time.time()
         if self._universe and now - self._universe_at < _UNIVERSE_TTL_S:
             return list(self._universe)
-        last: TdxError = TdxError("股票列表为空(五个市场均无返回)")
+        last: TdxQuantError = TdxQuantError("股票列表为空(五个市场均无返回)")
         for _attempt in range(_RETRIES):
             out: list[str] = []
             try:
@@ -181,7 +181,7 @@ class TdxClient:
                     lst = self._tqs.get_stock_list(market=market, list_type=0)
                     out.extend(code for code in (lst or []) if isinstance(code, str) and code)
             except Exception as exc:  # noqa: BLE001 — SDK 内部异常类型不可枚举
-                last = TdxError(f"get_stock_list: {exc}")
+                last = TdxQuantError(f"get_stock_list: {exc}")
                 out = []
             if out:
                 self._universe, self._universe_at = out, now
@@ -198,19 +198,19 @@ class TdxClient:
         """
         if not codes:
             return {}
-        last: TdxError = TdxError(f"snapshot_batch({len(codes)} 只): 未知失败")
+        last: TdxQuantError = TdxQuantError(f"snapshot_batch({len(codes)} 只): 未知失败")
         for _attempt in range(_RETRIES):
             try:
                 rows = self._tqs.get_market_snapshot_batch(
                     stock_list=list(codes), field_list=list(SNAPSHOT_FIELDS)
                 )
             except Exception as exc:  # noqa: BLE001 — SDK 内部异常类型不可枚举
-                last = TdxError(f"snapshot_batch({len(codes)} 只): {exc}")
+                last = TdxQuantError(f"snapshot_batch({len(codes)} 只): {exc}")
                 time.sleep(_RETRY_SLEEP_S)
                 continue
             if isinstance(rows, dict) and rows:
                 return rows
-            last = TdxError(f"snapshot_batch({len(codes)} 只): 空返回")
+            last = TdxQuantError(f"snapshot_batch({len(codes)} 只): 空返回")
             time.sleep(_RETRY_SLEEP_S)
         raise last
 
@@ -237,7 +237,7 @@ class TdxClient:
         try:
             out = self._tqs.get_divid_factors(code, start, end)
         except Exception as exc:  # SDK 内部异常类型不可枚举
-            raise TdxError(f"get_divid_factors({code}): {exc}") from exc
+            raise TdxQuantError(f"get_divid_factors({code}): {exc}") from exc
         if isinstance(out, list):
             return out
         # 环境装有 pandas 时 SDK 返回 DataFrame, 归一为 list[dict]。
@@ -257,4 +257,4 @@ class TdxClient:
                     return records
             except Exception:  # noqa: BLE001 — 转换失败按结构异常处理
                 pass
-        raise TdxError(f"get_divid_factors({code}) 返回异常结构: {type(out)!r}")
+        raise TdxQuantError(f"get_divid_factors({code}) 返回异常结构: {type(out)!r}")
