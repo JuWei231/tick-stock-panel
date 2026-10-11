@@ -1,0 +1,14 @@
+# tdx — 通达信量化数据服务插件 (https://help.tdx.com.cn/quant/)
+# 原生 TCP 私有协议 (tdxaidata 包, ctypes 包装跨平台 DLL), runtime: python。
+# 需安装 tdxaidata (uv pip install tdxaidata) 并配置 TDX_API_KEY, 缺一即灰显不可切换。
+
+name: tdx
+display_name: "tdx(通达信)"
+runtime: python
+entry: app.plugins.tdx.provider:TdxProvider
+check: app.plugins.tdx.provider:availability
+datasets: [realtime, depth5, daily, adj_factor]
+api_key_env: TDX_API_KEY   # 声明后设置页提供 Key 输入框(先探后存, secrets.json 优先)
+description: "通达信量化数据服务(原生 TCP 协议, 需 pip 安装 tdxaidata)。A 股实时快照(五市场全 A 股票池, 600 只/批; 全市场一轮约 10 批、30-60 秒, 建议把实时轮询间隔调大到 ≥60s)、五档盘口(快照自带买卖五档)、日K(count 模式单标的拉取, 原始价)、除权因子(事件接口+本地K线配价, 交易所公式推导, 涨跌停自检); 快照无名称列, 由标的维表关联。未声明 minute/financial → 自动回退 TickFlow。"
+install_hint: "先 uv pip install tdxaidata, 再在下方输入框填写数据服务 Key(通达信个人版商城-会员中心-积分和Key管理创建), 或配置环境变量 TDX_API_KEY"
+homepage: "https://help.tdx.com.cn/quant/"

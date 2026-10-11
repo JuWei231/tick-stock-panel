@@ -29,3 +29,11 @@ def test_spec_declares_builtin_plugin_fuyao():
     """fuyao 插件双声明不被回归 (同类动态发现问题, 见 spec 内注释)。"""
     assert "app.plugins.fuyao.provider" in SPEC_CODE
     assert "app/plugins/fuyao" in SPEC_CODE
+
+
+def test_spec_declares_builtin_plugin_tdx():
+    """tdx 插件双声明不被回归 (与 fuyao 同一处理方式; probe 子进程入口也要可导入)。"""
+    assert "app.plugins.tdx.provider" in SPEC_CODE
+    assert "app.plugins.tdx.client" in SPEC_CODE
+    assert "app.plugins.tdx.probe" in SPEC_CODE
+    assert "app/plugins/tdx" in SPEC_CODE
