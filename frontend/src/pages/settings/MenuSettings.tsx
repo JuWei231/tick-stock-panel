@@ -22,11 +22,12 @@ import { Link } from 'react-router-dom'
 import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { usePreferences } from '@/lib/useSharedQueries'
+import { getFrontendExtensionNavigation } from '@/extensions/registry'
 
 interface NavEntry {
   id: string
   label: string
-  type: 'builtin' | 'analysis'
+  type: 'builtin' | 'analysis' | 'extension'
   visible: boolean
 }
 
@@ -151,7 +152,7 @@ function SortableItem({ entry, hidden, onToggleHidden, badgeEnabled, onToggleBad
         <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${
           entry.type === 'analysis' ? 'bg-accent/10 text-accent' : 'bg-elevated text-muted'
         }`}>
-          {entry.type === 'builtin' ? '内置' : '扩展'}
+          {entry.type === 'builtin' ? '内置' : entry.type === 'analysis' ? '自定义' : '扩展'}
         </span>
       </div>
       <div className="flex justify-center">
@@ -168,21 +169,21 @@ function SortableItem({ entry, hidden, onToggleHidden, badgeEnabled, onToggleBad
         </button>
       </div>
       <div className="flex justify-center">
-        {entry.type === 'builtin' ? (
-          <Link
-            to={entry.id}
-            className="rounded p-1 text-muted hover:text-accent hover:bg-accent/10 transition-colors"
-            title="打开页面"
-          >
-            <ExternalLink className="h-3.5 w-3.5" />
-          </Link>
-        ) : (
+        {entry.type === 'analysis' ? (
           <Link
             to={`/settings?tab=ext-pages`}
             className="rounded p-1 text-muted hover:text-accent hover:bg-accent/10 transition-colors"
             title="编辑扩展页面"
           >
             <Settings className="h-3.5 w-3.5" />
+          </Link>
+        ) : (
+          <Link
+            to={entry.id}
+            className="rounded p-1 text-muted hover:text-accent hover:bg-accent/10 transition-colors"
+            title="打开页面"
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
           </Link>
         )}
       </div>
@@ -220,13 +221,23 @@ export function SettingsMenuSettingsPanel() {
     visible: m.visible,
   }))
 
+  // 扩展导航 (frontend/src/custom/*/extension.tsx 注册): id 取路由 path,
+  // 与 Layout 侧边栏 nav_order / nav_hidden 按 to 匹配的口径一致。
+  const extensionEntries: NavEntry[] = getFrontendExtensionNavigation().map(item => ({
+    id: item.route.path,
+    label: item.label,
+    type: 'extension' as const,
+    visible: true,
+  }))
+
   const allEntries = useMemo(() => {
     const saved = prefs?.nav_order ?? []
     const entryMap = new Map<string, NavEntry>()
     for (const e of BUILTIN_PAGES) entryMap.set(e.id, e)
     for (const e of analysisEntries) entryMap.set(e.id, e)
+    for (const e of extensionEntries) entryMap.set(e.id, e)
 
-    if (saved.length === 0) return [...BUILTIN_PAGES, ...analysisEntries]
+    if (saved.length === 0) return [...BUILTIN_PAGES, ...analysisEntries, ...extensionEntries]
 
     const ordered: NavEntry[] = []
     const seen = new Set<string>()
@@ -237,7 +248,7 @@ export function SettingsMenuSettingsPanel() {
         seen.add(id)
       }
     }
-    for (const e of [...BUILTIN_PAGES, ...analysisEntries]) {
+    for (const e of [...BUILTIN_PAGES, ...analysisEntries, ...extensionEntries]) {
       if (seen.has(e.id)) continue
       // 未保存过排序的新条目: 内置页插回默认位置, 分析菜单追加到末尾
       const defaultIndex = BUILTIN_PAGES.findIndex(p => p.id === e.id)
@@ -252,7 +263,7 @@ export function SettingsMenuSettingsPanel() {
       else ordered.push(e)
     }
     return ordered
-  }, [prefs?.nav_order, analysisEntries])
+  }, [prefs?.nav_order, analysisEntries, extensionEntries])
 
   const hiddenSet = useMemo(() => new Set(prefs?.nav_hidden ?? []), [prefs?.nav_hidden])
 
