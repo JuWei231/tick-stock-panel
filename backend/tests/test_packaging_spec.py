@@ -36,4 +36,4 @@ def test_spec_declares_builtin_plugin_tdx():
     assert "app.plugins.tdxquant.provider" in SPEC_CODE
     assert "app.plugins.tdxquant.client" in SPEC_CODE
     assert "app.plugins.tdxquant.probe" in SPEC_CODE
-    assert "app/plugins/tdxquant" in SPEC_CODE
+    assert '"plugins" / "tdxquant" / "plugin.yaml"' in SPEC_CODE  # 源路径必须指向现存目录

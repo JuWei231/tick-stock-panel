@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 import math
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from zoneinfo import ZoneInfo
@@ -467,10 +467,109 @@ def test_availability_ok(monkeypatch):
 
 def test_datasets_declaration():
     p = TdxQuantProvider()
-    assert set(p.config.datasets) == {"realtime", "depth5", "daily", "adj_factor"}
+    assert set(p.config.datasets) == {"realtime", "depth5", "daily", "adj_factor", "minute", "full_minute"}
     assert p.name == "tdxquant" and p.config.builtin is True
-    for absent in ("minute", "full_minute", "financial"):
+    for absent in ("financial",):
         assert absent not in p.config.datasets  # 未声明 → provider_has_dataset False → 回退 tickflow
+
+
+# ---------------------------------------------------------------- minute / full_minute
+def _minute_raw(rows: list[tuple[str, str, float, float, float, float, float, float]]) -> dict:
+    """(Date, Time, O, H, L, C, Volume股, Amount万元) → 原生 1m 列式 dict。"""
+    return {
+        "Date": [r[0] for r in rows], "Time": [r[1] for r in rows],
+        "Open": [r[2] for r in rows], "High": [r[3] for r in rows],
+        "Low": [r[4] for r in rows], "Close": [r[5] for r in rows],
+        "Volume": [r[6] for r in rows], "Amount": [r[7] for r in rows],
+    }
+
+
+def test_minute_units_and_wallclock_datetime():
+    fake = _FakeClient()
+    fake.his = {"600519.SH": _minute_raw([
+        ("20261009", "093100", 1255.0, 1256.0, 1254.9, 1255.5, 123_400.0, 15_500.0),
+        ("20261009", "150000", 1263.0, 1263.0, 1263.0, 1263.0, 38_600.00, 4869.62),
+    ])}
+    df = _provider(fake).get_minute(
+        ["600519.SH"], datetime(2026, 10, 8), datetime(2026, 10, 9, 23, 59)
+    )
+    assert fake.his_calls[0]["period"] == "1m"
+    assert df.height == 2
+    rows = df.sort("datetime").to_dicts()
+    assert rows[0]["datetime"] == datetime(2026, 10, 9, 9, 31, 0)   # 北京墙钟 naive
+    assert rows[1]["datetime"] == datetime(2026, 10, 9, 15, 0, 0)
+    assert rows[0]["volume"] == 1234.0        # 股 → floor(/100) 手
+    assert rows[1]["volume"] == 386.0
+    assert rows[1]["amount"] == pytest.approx(48_696_200.0)  # 万元 → 元
+
+
+def test_minute_window_filter_and_gap_skip():
+    fake = _FakeClient()
+    fake.his = {"600519.SH": _minute_raw([
+        ("20261008", "150000", 1250.0, 1250.0, 1250.0, 1250.0, 100_000.0, 12_500.0),  # 窗口外
+        ("20261009", "093100", 1255.0, 1256.0, 1254.9, 1255.5, 123_400.0, 15_500.0),
+        ("20261009", "093200", None, None, None, None, None, None),                    # 停牌缺口
+    ])}
+    df = _provider(fake).get_minute(
+        ["600519.SH"], datetime(2026, 10, 9), datetime(2026, 10, 9, 23, 59)
+    )
+    assert df.height == 1
+    assert df.to_dicts()[0]["datetime"] == datetime(2026, 10, 9, 9, 31, 0)
+
+
+def test_minute_freq_and_asset_guards():
+    fake = _FakeClient()
+    p = _provider(fake)
+    assert p.get_minute(["600519.SH"], None, datetime.now(), freq="5m").is_empty()
+    assert p.get_minute(["510300.SH"], None, datetime.now(), asset_type="etf").is_empty()
+    assert fake.his_calls == []  # 未发起取数
+
+
+def test_minute_transport_error_soft():
+    fake = _FakeClient()
+    fake.his = {"600519.SH": tc.TdxQuantError("boom")}
+    df = _provider(fake).get_minute(["600519.SH"], None, datetime.now())
+    assert df.is_empty()  # 软失败不阻断
+
+
+def test_get_intraday_batch_today_only():
+    fake = _FakeClient()
+    today = date.today().strftime("%Y%m%d")
+    yday = (date.today() - timedelta(days=1)).strftime("%Y%m%d")
+    fake.his = {"600519.SH": _minute_raw([
+        (yday, "150000", 1250.0, 1250.0, 1250.0, 1250.0, 100_000.0, 12_500.0),  # 前日余量 → 过滤
+        (today, "093100", 1255.0, 1256.0, 1254.9, 1255.5, 123_400.0, 15_500.0),
+        (today, "093200", 1255.5, 1257.0, 1255.0, 1256.0, 88_800.0, 11_160.0),
+    ])}
+    df = _provider(fake).get_intraday_batch(["600519.SH"])
+    assert df.height == 2  # 只保留今日行
+    assert fake.his_calls[0]["period"] == "1m"
+
+
+def test_get_intraday_latest_universe_default():
+    fake = _FakeClient()
+    fake.universe = ["600000.SH", "000001.SZ"]
+    today = date.today().strftime("%Y%m%d")
+    for sym in fake.universe:
+        fake.his[sym] = _minute_raw([
+            (today, "093100", 10.0, 10.1, 9.9, 10.0, 50_000.0, 500.0),
+            (today, "093200", 10.0, 10.1, 9.9, 10.0, 50_000.0, 500.0),
+        ])
+    df = _provider(fake).get_intraday_latest(count=3)
+    assert df.height == 4  # 每只 2 根
+    assert set(df["symbol"].to_list()) == {"600000.SH", "000001.SZ"}
+    assert all(c["count"] <= 30 for c in fake.his_calls)
+
+
+def test_test_dataset_minute():
+    fake = _FakeClient()
+    today = date.today().strftime("%Y%m%d")
+    fake.his = {"600519.SH": _minute_raw([
+        (today, "093100", 1255.0, 1256.0, 1254.9, 1255.5, 123_400.0, 15_500.0),
+    ])}
+    out = _provider(fake).test_dataset("minute", ["600519.SH"])
+    assert out["rows"] == 1
+    assert "datetime" in out["columns"]
 
 
 # ---------------------------------------------------------------- provider: 试拉
@@ -483,7 +582,7 @@ def test_test_dataset_realtime(monkeypatch):
 
 
 def test_test_dataset_unsupported_dataset():
-    out = _provider(_FakeClient()).test_dataset("minute")
+    out = _provider(_FakeClient()).test_dataset("financial")
     assert "error" in out and "回退" in out["error"]
 
 
@@ -496,7 +595,15 @@ def test_loader_manifest_parses_and_entry_importable():
     manifest = loader.plugin_manifest("tdxquant")
     assert manifest is not None
     assert manifest["name"] == "tdxquant"
-    assert set(manifest["datasets"]) == {"realtime", "depth5", "daily", "adj_factor"}
+    assert manifest["display_name"] == "TdxQuant (TdxAiData)"
+    assert set(manifest["datasets"]) == {"realtime", "depth5", "daily", "adj_factor", "minute", "full_minute"}
+    # 计费标识与 Key/积分管理页 (设置页积分角标 + 商城入口的契约来源)
+    assert manifest["billing"] == "points"
+    assert manifest["key_manage_url"].startswith("https://vip.tdx.com.cn/")
+    # 计费提示与使用要点 (设置页警示框 + 详情列表的契约来源)
+    assert "积分" in manifest["billing_note"] and "间隔" in manifest["billing_note"]
+    assert len(manifest["usage_notes"]) >= 4
+    assert any("快照" in n for n in manifest["usage_notes"])
     module_path, _, class_name = manifest["entry"].partition(":")
     provider_cls = getattr(import_module(module_path), class_name)
     assert provider_cls.name == "tdxquant"

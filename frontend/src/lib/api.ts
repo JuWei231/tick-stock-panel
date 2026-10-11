@@ -1823,6 +1823,15 @@ export interface EndpointManifest {
   source?: 'remote' | 'fallback'
 }
 
+/** 赞助商模型条目 — /v1/models 的 pricing/context_length 精简视图 */
+export interface SponsorModelItem {
+  id: string
+  context_length?: number | null
+  discount_rate?: number
+  input_price?: number | null
+  output_price?: number | null
+}
+
 export interface SettingsState {
   mode: 'none' | 'free' | 'api_key'
   tickflow_api_key_masked: string
@@ -1834,8 +1843,11 @@ export interface SettingsState {
   extras_caps: string[]
   // 首次使用引导
   onboarding_completed: boolean
+  // 配置文件位置 (secrets.json: AI 与数据源 Key 统一存放)
+  secrets_path?: string
   // AI 配置
   ai_provider: string
+  ai_protocol?: string
   ai_base_url: string
   ai_api_key_masked: string
   has_ai_key: boolean
@@ -1885,6 +1897,10 @@ export interface PluginDataSourceItem {
   homepage?: string        // 插件官网/申请地址 (manifest 可选声明)
   api_key_env?: string     // 声明后设置页提供 Key 输入框 (先探后存)
   api_key_masked?: string  // 当前生效 Key 的脱敏串 (secrets.json 优先, .env 兜底; 与 TickFlow Key 同一展示契约)
+  billing?: string         // 计费标识 (可选): "points" → 能力芯片/适配行标注「积分」
+  billing_note?: string    // 计费提示 (可选): 积分消耗与频率/范围的关系, 按警示样式展示
+  usage_notes?: string[]   // 使用要点 (可选): 各能力规模/节奏, 详情卡以列表展示
+  key_manage_url?: string  // Key/账务管理页 (可选): Key 配置区展示入口链接
 }
 
 /** 数据源路由偏好字段 (每个能力一个, 与后端能力注册表一一对应) */
@@ -2238,8 +2254,8 @@ export const api = {
     ),
 
   /** 保存 AI 配置 */
-  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number; round_checkpoint?: number }) =>
-    request<{ ok: boolean; ai_provider?: string; ai_model?: string; ai_openai_model?: string; ai_reasoning_effort?: string; ai_codex_model?: string; ai_codex_command?: string; ai_codex_reasoning_effort?: string; ai_configured?: boolean; ai_max_output_tokens?: number; ai_context_window?: number; ai_round_checkpoint?: number }>('/api/settings/ai', {
+  saveAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string; reasoning_effort?: string; codex_command?: string; codex_reasoning_effort?: string; user_agent?: string; max_output_tokens?: number; context_window?: number; round_checkpoint?: number }) =>
+    request<{ ok: boolean; ai_provider?: string; ai_protocol?: string; ai_model?: string; ai_openai_model?: string; ai_reasoning_effort?: string; ai_codex_model?: string; ai_codex_command?: string; ai_codex_reasoning_effort?: string; ai_configured?: boolean; ai_max_output_tokens?: number; ai_context_window?: number; ai_round_checkpoint?: number }>('/api/settings/ai', {
       method: 'POST',
       body: JSON.stringify(ai),
     }),
@@ -2248,9 +2264,16 @@ export const api = {
   clearAiSettings: () =>
     request<{ ok: boolean }>('/api/settings/ai', { method: 'DELETE' }),
 
+  /** 草稿连通性测试 — 只验证当前表单值, 不保存任何配置 */
+  testAiSettings: (ai: { provider?: string; base_url?: string; api_key?: string; model?: string; protocol?: string }) =>
+    request<{ ok: boolean; model?: string; response?: string; error?: string; error_type?: string }>('/api/settings/ai/test', {
+      method: 'POST',
+      body: JSON.stringify(ai),
+    }),
+
   /** 赞助商(RunningHub)模型列表(后端代理, 规避其网关按 Origin 过滤) */
   sponsorModels: () =>
-    request<{ models: string[] }>('/api/settings/ai/sponsor-models'),
+    request<{ models: string[]; items?: SponsorModelItem[] }>('/api/settings/ai/sponsor-models'),
 
   // ===== API Token 管理 (开放层; 仅 UI 会话可达) =====
   apiTokensList: () =>
@@ -2295,14 +2318,13 @@ export const api = {
       { method: 'DELETE' },
     ),
   savePluginKey: (plugin: string, apiKey: string) => {
-    // 先探后存: 后端会用候选 Key 实探一次, 探测超时 10s + 余量
-    const controller = new AbortController()
-    const timer = setTimeout(() => controller.abort(), 30_000)
+    // 先探后存: 后端用候选 Key 实探一次。HTTP 型源秒级; 子进程实探型源(如 TdxQuant
+    // 冷启动 DLL + 预热 + 实探)实测 ~35s, 超时给到 75s 兼顾最坏情况, 报错可读。
     return request<PluginKeyResult>('/api/settings/plugin-key', {
       method: 'POST',
       body: JSON.stringify({ plugin, api_key: apiKey }),
-      signal: controller.signal,
-    }).finally(() => clearTimeout(timer))
+      timeoutMs: 75_000,
+    })
   },
   clearPluginKey: (plugin: string) =>
     request<PluginKeyResult>(`/api/settings/plugin-key/${encodeURIComponent(plugin)}`, { method: 'DELETE' }),

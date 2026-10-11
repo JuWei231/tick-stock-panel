@@ -8,12 +8,18 @@
   - depth5      五档盘口(快照 Buyp/Buyv/Sellp/Sellv)
   - daily       A 股日K, 原始价(dividend=none), count 模式单标的拉取
   - adj_factor  除权因子: 事件接口 + 本地K线配价, 交易所公式推导, 涨跌停自检
-未声明 minute/financial/full_minute → provider_has_dataset 为 False, 回退 tickflow。
+  - minute      分钟K(period=1m count 模式, 单标的 240 根/日, 原始价)
+  - full_minute 全量分钟: 修复轮 get_intraday_batch(当日窗口) +
+                稳态增量 get_intraday_latest(每股最新 count 根)。
+未声明 financial → provider_has_dataset 为 False, 回退 tickflow。
 
 单位与口径 (CONTRIBUTING §3, 不可凭字段名推断; 2026-10 实测):
   - 快照 Volume 已是手, 直接透传; Amount 为万元 → ×10000 转元。
   - 快照无涨跌幅字段 → change_pct = (Now-LastClose)/LastClose, 小数制。
   - 日K Volume 为股 → floor(/100) 转手; Amount 为万元 → ×10000 转元。
+  - 分钟K与日K同源同口径 (实测茅台全天 240 根 sum(Volume)=3511100 ≈ 日K
+    3511051 股): Volume 股 → floor(/100) 转手; Amount 万元 → ×10000 转元;
+    datetime = Date+Time 拼北京墙钟 naive (契约 §分钟K)。
   - 日K取数 dividend="none" 锁定原始价, 前复权由 indicators.pipeline 用本地因子计算。
   - 除权事件 Bonus/ShareBonus/Allotment 均为每 10 股口径 → ÷10 转每股再进公式。
   - ex_factor 为单事件比值(非累积), 累积链由 pipeline._apply_adj_factor 构建。
@@ -37,7 +43,7 @@ from app.plugins.tdxquant.client import SNAPSHOT_FIELDS, TdxQuantClient, TdxQuan
 logger = logging.getLogger(__name__)
 
 # 只声明真实提供的数据集; 其余数据集 provider_has_dataset 返回 False → 回退 tickflow
-_DATASETS = ("realtime", "depth5", "daily", "adj_factor")
+_DATASETS = ("realtime", "depth5", "daily", "adj_factor", "minute", "full_minute")
 
 API_KEY_ENV = "TDXQUANT_API_KEY"
 SECRETS_FIELD = "tdxquant_api_key"  # UI 配置的 Key 存 secrets.json, 优先级高于 .env
@@ -62,6 +68,14 @@ _ADJ_SCHEMA = {
     "dividend": pl.Float64, "bonus": pl.Float64, "allot": pl.Float64,
     "allot_price": pl.Float64, "prev_close": pl.Float64,
 }
+_MINUTE_SCHEMA = {
+    "symbol": pl.String, "datetime": pl.Datetime("us"),
+    "open": pl.Float64, "high": pl.Float64, "low": pl.Float64, "close": pl.Float64,
+    "volume": pl.Float64, "amount": pl.Float64,
+}
+_MINUTE_BARS_PER_DAY = 240  # A 股 1m 一交易日根数(含收盘集合竞价分钟)
+_MINUTE_MAX_COUNT = 9600    # 实测单次 count=9600(40 交易日)正常返回
+_MINUTE_INTERVAL_S = 0.08   # 单标的分钟请求节流(与日K同档)
 
 
 def get_api_key() -> str:
@@ -89,10 +103,18 @@ def availability() -> tuple[bool, str]:
 
 
 def probe_api_key(api_key: str) -> tuple[bool, str]:
-    """候选 Key 独立子进程实探(先探后存, 对齐 /tickflow-key 语义)。不落盘。"""
+    """候选 Key 探测: 格式校验 + 子进程连通性实探。
+
+    TDX 会话按 IP 复用(同 IP 活跃好 Key 会话时错误 Key 也能拉到日K, 实测),
+    "无效 Key 拒绝"不可靠 — 格式明显不对直接拒绝, 连通性通过即保存,
+    Key 真伪由首次实拉(test_dataset / 日常轮询)暴露, 卡片可一键试拉复核。
+    """
+    key = (api_key or "").strip()
+    if not key.startswith("TDX-") or len(key) < 12:
+        return False, "Key 格式应为 TDX- 开头(通达信商城创建的数据服务 Key)"
     from app.plugins.tdxquant import probe
 
-    return probe.run(api_key)
+    return probe.run(key)
 
 
 @dataclass
@@ -233,6 +255,67 @@ def _kline_rows(symbol: str, raw: dict, start_d: date | None, end_d: date) -> li
 def _bars_for_window(span_days: int) -> int:
     """窗口自然日跨度 → count 模式请求根数(交易日≈自然日×5/7, 加停牌冗余)。"""
     return max(30, min(_HIST_MAX_COUNT, int(span_days * 5 / 7) + 20))
+
+
+def _minute_dt(compact_date, hhmmss) -> datetime | None:
+    """Date 'YYYYMMDD' + Time 'HHMMSS' → 北京墙钟 naive datetime; 非法返回 None。"""
+    d = _compact_date(compact_date)
+    if d is None:
+        return None
+    t = str(hhmmss or "").strip()
+    if len(t) < 6 or not t[:6].isdigit():
+        return None
+    try:
+        return datetime(d.year, d.month, d.day, int(t[:2]), int(t[2:4]), int(t[4:6]))
+    except ValueError:
+        return None
+
+
+def _minute_rows(
+    symbol: str, raw: dict, start_dt: datetime | None, end_dt: datetime | None,
+    today_only: date | None = None,
+) -> list[dict]:
+    """原生 1m K 线 dict → 内部分钟行(datetime 北京墙钟, volume 股→手, amount 万元→元)。
+
+    today_only 非空时仅保留该交易日的行(修复轮用: count 模式尾部会带前一日余量)。
+    """
+    dates = raw.get("Date") or []
+    times = raw.get("Time") or []
+    out: list[dict] = []
+    for i, compact in enumerate(dates):
+        dt = _minute_dt(compact, times[i] if i < len(times) else None)
+        if dt is None:
+            continue
+        if today_only is not None and dt.date() != today_only:
+            continue
+        if start_dt is not None and dt < start_dt:
+            continue
+        if end_dt is not None and dt > end_dt:
+            continue
+
+        def _col(name: str, idx: int = i) -> float | None:
+            values = raw.get(name)
+            return _to_float(values[idx]) if values and idx < len(values) else None
+
+        close = _col("Close")
+        if close is None:
+            continue  # 停牌/无成交分钟, 不伪造
+        volume = _col("Volume")
+        amount = _col("Amount")
+        out.append({
+            "symbol": symbol, "datetime": dt,
+            "open": _col("Open"), "high": _col("High"),
+            "low": _col("Low"), "close": close,
+            "volume": float(math.floor(volume / 100.0)) if volume is not None else None,
+            "amount": amount * 10_000.0 if amount is not None else None,
+        })
+    return out
+
+
+def _minute_count_for_window(start_dt: datetime | None, end_dt: datetime) -> int:
+    """窗口 → 单次 count 请求根数(交易日×240 + 两日余量, 封顶 _MINUTE_MAX_COUNT)。"""
+    span_days = (end_dt.date() - start_dt.date()).days if start_dt else 30
+    return max(240, min(_MINUTE_MAX_COUNT, int(span_days * 5 / 7 * _MINUTE_BARS_PER_DAY) + 480))
 
 
 class TdxQuantProvider:
@@ -480,6 +563,115 @@ class TdxQuantProvider:
             })
         return rows
 
+    # ---- minute / full_minute ----
+    def get_minute(
+        self,
+        symbols: list[str],
+        start_time: datetime | None,
+        end_time: datetime | None,
+        asset_type: str = "stock",
+        freq: str = "1m",
+        on_chunk_done: Callable[[int, int], None] | None = None,
+    ) -> pl.DataFrame:
+        """分钟K → 内部契约(symbol/datetime 北京墙钟 naive/ohlcv/volume 手/amount 元)。
+
+        period=1m count 模式单标的拉取(实测 240 根/日, count≤9600 正常);
+        freq 仅支持 1m(上游有 5m 等档位但项目契约按 1m 路由), 其余空手而归还上层回退;
+        ETF/指数分钟未实测覆盖, asset_type 仅接受 stock。
+        """
+        chunks = list(self.iter_minute(
+            symbols, start_time=start_time, end_time=end_time,
+            asset_type=asset_type, freq=freq, on_chunk_done=on_chunk_done,
+        ))
+        parts = [df for df in chunks if not df.is_empty()]
+        return pl.concat(parts, how="diagonal_relaxed") if parts else pl.DataFrame(schema=_MINUTE_SCHEMA)
+
+    def iter_minute(
+        self,
+        symbols: list[str],
+        start_time: datetime | None,
+        end_time: datetime | None,
+        asset_type: str = "stock",
+        freq: str = "1m",
+        on_chunk_done: Callable[[int, int], None] | None = None,
+    ) -> Iterator[pl.DataFrame]:
+        if not symbols or asset_type != "stock" or freq != "1m":
+            if on_chunk_done:
+                on_chunk_done(0, 0)
+            return
+        client = self._get_client()
+        end_dt = end_time or datetime.now()
+        count = _minute_count_for_window(start_time, end_dt)
+        for i, symbol in enumerate(symbols):
+            try:
+                raw = client.his_dats(symbol, end_dt.date(), count, period="1m")
+            except TdxQuantError as e:
+                logger.warning("TdxQuant 分钟K %s 拉取失败: %s", symbol, e)
+                raw = {}
+            rows = _minute_rows(symbol, raw, start_time, end_dt)
+            yield pl.DataFrame(rows, schema=_MINUTE_SCHEMA)
+            if on_chunk_done:
+                on_chunk_done(i + 1, len(symbols))
+            time.sleep(_MINUTE_INTERVAL_S)
+
+    def get_intraday_batch(
+        self, symbols: list[str], count: int = 300, asset_type: str = "stock",
+    ) -> pl.DataFrame:
+        """全量分钟修复轮: 当日窗口逐标的拉取, 只保留今日 1m 行。
+
+        count 模式尾部天然带前一日余量, 按 today_only 过滤; 单标的请求
+        240+count 余量根。全市场一轮 5579 次调用(含节流约 10 分钟量级),
+        由 minute_refresh 以修复轮节奏调度。
+        """
+        if not symbols or asset_type != "stock":
+            return pl.DataFrame(schema=_MINUTE_SCHEMA)
+        client = self._get_client()
+        today = datetime.now().date()
+        fetch = max(_MINUTE_BARS_PER_DAY, min(count, 480)) + _MINUTE_BARS_PER_DAY
+        out: list[pl.DataFrame] = []
+        for symbol in symbols:
+            try:
+                raw = client.his_dats(symbol, today, fetch, period="1m")
+            except TdxQuantError as e:
+                logger.warning("TdxQuant 修复轮 %s 拉取失败: %s", symbol, e)
+                continue
+            rows = _minute_rows(symbol, raw, None, None, today_only=today)
+            if rows:
+                out.append(pl.DataFrame(rows, schema=_MINUTE_SCHEMA))
+            time.sleep(_MINUTE_INTERVAL_S)
+        return pl.concat(out, how="diagonal_relaxed") if out else pl.DataFrame(schema=_MINUTE_SCHEMA)
+
+    def get_intraday_latest(self, symbols: list[str] | None = None, count: int = 3) -> pl.DataFrame:
+        """全量分钟稳态增量轮: 每只标的最新 count 根 1m(symbols 缺省 = 全市场股票池)。
+
+        与修复轮同为逐标的 count 调用(无批量端点), 差别在根数少、负载轻;
+        失败标的跳过, 空轮由调用方按空处理。
+        """
+        client = self._get_client()
+        targets = list(symbols) if symbols else []
+        if not targets:
+            try:
+                targets = client.stock_universe()
+            except TdxQuantError as e:
+                logger.warning("TdxQuant 增量轮股票池枚举失败: %s", e)
+                return pl.DataFrame(schema=_MINUTE_SCHEMA)
+        count = max(1, min(int(count), 30))
+        today = datetime.now().date()
+        out: list[pl.DataFrame] = []
+        for j, symbol in enumerate(targets):
+            try:
+                raw = client.his_dats(symbol, today, count, period="1m")
+            except TdxQuantError as e:
+                logger.warning("TdxQuant 增量轮 %s 拉取失败: %s", symbol, e)
+                continue
+            rows = _minute_rows(symbol, raw, None, None)
+            if rows:
+                out.append(pl.DataFrame(rows, schema=_MINUTE_SCHEMA))
+            if j % 1000 == 999:
+                logger.info("TdxQuant 增量轮进度: %d/%d", j + 1, len(targets))
+            time.sleep(_MINUTE_INTERVAL_S)
+        return pl.concat(out, how="diagonal_relaxed") if out else pl.DataFrame(schema=_MINUTE_SCHEMA)
+
     # ---- depth5 ----
     def get_depth_batch(self, symbols: list[str]) -> dict[str, dict]:
         """五档盘口 → {symbol: 标准盘口字典}。数量单位手(透传), 价格转 float。"""
@@ -541,6 +733,21 @@ class TdxQuantProvider:
                 return {"provider": self.name, "dataset": dataset, "rows": 0, "error": str(e)}
             head = df.head(5).to_dicts()
             for row in head:  # date/datetime → ISO 字符串, 保证 JSON 可序列化
+                for k, v in list(row.items()):
+                    if isinstance(v, (date, datetime)):
+                        row[k] = v.isoformat()
+            return {"provider": self.name, "dataset": dataset, "rows": df.height,
+                    "columns": df.columns, "preview": head}
+        if dataset in ("minute", "full_minute"):
+            syms = [s for s in (symbols or [])][:3] or ["600519.SH"]
+            try:
+                end = datetime.now()
+                df = (self.get_intraday_batch(syms) if dataset == "full_minute"
+                      else self.get_minute(syms, end - timedelta(days=3), end))
+            except TdxQuantError as e:
+                return {"provider": self.name, "dataset": dataset, "rows": 0, "error": str(e)}
+            head = df.head(5).to_dicts()
+            for row in head:
                 for k, v in list(row.items()):
                     if isinstance(v, (date, datetime)):
                         row[k] = v.isoformat()
