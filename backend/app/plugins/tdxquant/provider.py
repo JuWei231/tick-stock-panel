@@ -82,7 +82,7 @@ def _module_available() -> bool:
 def availability() -> tuple[bool, str]:
     """loader 启动自检: tdxaidata 已安装 + Key 已配置才注册。不抛异常。"""
     if not _module_available():
-        return False, "未安装 tdxaidata(uv pip install tdxaidata, 自带跨平台原生库)"
+        return False, "tdxaidata 未安装(默认依赖, 请检查 uv sync)"
     if not get_api_key():
         return False, f"缺少 API Key(可在下方输入框直接填写,或配置环境变量 {API_KEY_ENV})"
     return True, "ok"
