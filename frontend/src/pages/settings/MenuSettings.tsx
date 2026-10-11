@@ -23,6 +23,7 @@ import { api } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { usePreferences } from '@/lib/useSharedQueries'
 import { getFrontendExtensionNavigation } from '@/extensions/registry'
+import { compareByDefaultNav, defaultNavIndex } from '@/lib/navOrder'
 
 interface NavEntry {
   id: string
@@ -31,7 +32,8 @@ interface NavEntry {
   visible: boolean
 }
 
-// 与 Layout 侧边栏默认顺序保持一致 (nav_order 未保存时的默认展示顺序)
+// 核心页清单; nav_order 未保存时的完整默认顺序以 lib/navOrder 基准为准
+// (含迁移到 custom/ 的扩展域页面, 保证老用户升级侧栏顺序无感)
 const BUILTIN_PAGES: NavEntry[] = [
   { id: '/', label: '看板', type: 'builtin', visible: true },
   { id: '/watchlist', label: '自选', type: 'builtin', visible: true },
@@ -226,7 +228,11 @@ export function SettingsMenuSettingsPanel() {
     for (const e of analysisEntries) entryMap.set(e.id, e)
     for (const e of extensionEntries) entryMap.set(e.id, e)
 
-    if (saved.length === 0) return [...BUILTIN_PAGES, ...analysisEntries, ...extensionEntries]
+    // 无保存排序: 按迁移前默认基准排序 (扩展域页面不沉底, 老用户升级无感)
+    if (saved.length === 0) {
+      return [...BUILTIN_PAGES, ...analysisEntries, ...extensionEntries]
+        .sort((a, b) => compareByDefaultNav(a.id, b.id))
+    }
 
     const ordered: NavEntry[] = []
     const seen = new Set<string>()
@@ -239,16 +245,16 @@ export function SettingsMenuSettingsPanel() {
     }
     for (const e of [...BUILTIN_PAGES, ...analysisEntries, ...extensionEntries]) {
       if (seen.has(e.id)) continue
-      // 未保存过排序的新条目: 内置页插回默认位置, 分析菜单追加到末尾
-      const defaultIndex = BUILTIN_PAGES.findIndex(p => p.id === e.id)
+      // 未保存过排序的新条目: 默认基准内的路径插回默认位置, 其余追加到末尾
+      const di = defaultNavIndex(e.id)
       let anchor = -1
-      if (defaultIndex > 0) {
-        for (let i = defaultIndex - 1; i >= 0 && anchor < 0; i -= 1) {
-          anchor = ordered.findIndex(o => o.id === BUILTIN_PAGES[i].id)
+      if (Number.isFinite(di) && di > 0) {
+        for (let i = di - 1; i >= 0 && anchor < 0; i -= 1) {
+          anchor = ordered.findIndex(o => defaultNavIndex(o.id) === i)
         }
       }
       if (anchor >= 0) ordered.splice(anchor + 1, 0, e)
-      else if (defaultIndex >= 0) ordered.unshift(e)
+      else if (di === 0) ordered.unshift(e)
       else ordered.push(e)
     }
     return ordered
@@ -270,16 +276,16 @@ export function SettingsMenuSettingsPanel() {
     }
     for (const e of allEntries) {
       if (seen.has(e.id)) continue
-      // 与 allEntries 同一语义: 未保存的新内置页插回默认位置而非追加到末尾
-      const defaultIndex = BUILTIN_PAGES.findIndex(p => p.id === e.id)
+      // 与 allEntries 同一语义: 默认基准内的路径插回默认位置而非追加到末尾
+      const di = defaultNavIndex(e.id)
       let anchor = -1
-      if (defaultIndex > 0) {
-        for (let i = defaultIndex - 1; i >= 0 && anchor < 0; i -= 1) {
-          anchor = result.findIndex(o => o.id === BUILTIN_PAGES[i].id)
+      if (Number.isFinite(di) && di > 0) {
+        for (let i = di - 1; i >= 0 && anchor < 0; i -= 1) {
+          anchor = result.findIndex(o => defaultNavIndex(o.id) === i)
         }
       }
       if (anchor >= 0) result.splice(anchor + 1, 0, e)
-      else if (defaultIndex >= 0) result.unshift(e)
+      else if (di === 0) result.unshift(e)
       else result.push(e)
     }
     return result

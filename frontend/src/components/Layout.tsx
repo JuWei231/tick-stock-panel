@@ -21,6 +21,7 @@ import {
   useToggleRealtimeQuotes,
 } from '@/lib/useSharedMutations'
 import { QK } from '@/lib/queryKeys'
+import { compareByDefaultNav, defaultNavIndex } from '@/lib/navOrder'
 import {
   Settings,
   DatabaseZap,
@@ -558,22 +559,25 @@ export function Layout() {
         const merged = [...ordered]
         for (const item of allNav) {
           if (seen.has(item.to)) continue
-          // 未保存过排序的新条目: 内置页插回默认位置(排在已保存的默认前驱之后),
-          // 分析/扩展菜单仍追加到末尾
-          const defaultIndex = nav.findIndex(n => n.to === item.to)
+          // 未保存过排序的新条目: 默认基准内的路径插回默认位置(排在已出现的
+          // 最近默认前驱之后), 分析菜单/未知扩展追加到末尾。基准含迁移到
+          // custom/ 的扩展域页面, 保证老用户升级无感 (lib/navOrder)。
+          const di = defaultNavIndex(item.to)
           let anchor = -1
-          if (defaultIndex > 0) {
-            for (let i = defaultIndex - 1; i >= 0 && anchor < 0; i -= 1) {
-              anchor = merged.findIndex(n => n.to === nav[i].to)
+          if (Number.isFinite(di) && di > 0) {
+            for (let i = di - 1; i >= 0 && anchor < 0; i -= 1) {
+              anchor = merged.findIndex(n => defaultNavIndex(n.to) === i)
             }
           }
           if (anchor >= 0) merged.splice(anchor + 1, 0, item)
-          else if (defaultIndex >= 0) merged.unshift(item)
+          else if (di === 0) merged.unshift(item)
           else merged.push(item)
         }
         return merged
       })()
-    : allNav
+    // 无保存排序 (新装/从未调整过菜单): 按迁移前默认基准排序, 扩展域页面
+    // 不沉底 — 老用户升级侧栏顺序与迁移前一致; 未知路径稳定追加在后。
+    : [...allNav].sort((a, b) => compareByDefaultNav(a.to, b.to))
 
   const hiddenIds = new Set(prefs?.nav_hidden ?? [])
   const visibleNavItems = navItems.filter(n => !hiddenIds.has(n.to) && !hiddenIds.has(n.to.replace(/^\/analysis\//, '')))
