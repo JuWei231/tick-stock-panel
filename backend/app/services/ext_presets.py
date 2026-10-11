@@ -6,18 +6,24 @@
   - 「已存在则跳过」: 绝不覆盖用户已有数据, 老用户零影响
   - 拉取失败只记 warning, 不阻断启动 (保持「没数据也能跑」)
 
-种子数据来源 (概念/行业各自独立配置):
-  - 概念: https://shy313.com/api/plugins/market_flow/exports/ths-concepts
-  - 行业: https://shy313.com/api/plugins/market_flow/exports/ths-industries
-作者更新数据只需改接口上的 JSON, 用户下次拉取自动同步, 无需发版。
+种子数据来源 (概念/行业共用 fuyao 同花顺指数接口, 2026-10 起替代自维护导出):
+  - 板块清单: /api/a-share-index/catalog/ths-index-list (tag=cn_concept / industry)
+  - 板块成分: /api/a-share-index/constituents/ths-stock-list (单板块一次)
+  接口方向为「板块→股票」, 此处反转为「股票→板块名清单」, 行结构与旧种子源
+  同构 ([{symbol, name, concepts|industries: [...]}]) → flatten 与下游零改动。
+  API Key 复用 fuyao 插件同一凭据; 全量约 390+320 次成分股调用, 8 并发可承受。
 
 接入点: app.main.lifespan → ensure_builtin_presets(store.data_dir)
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
+from datetime import date
 from pathlib import Path
+
+import httpx
 
 from app.services.ext_data import (
     ExtConfig,
@@ -29,9 +35,14 @@ from app.services.ext_data import (
 
 logger = logging.getLogger(__name__)
 
-# 种子数据源 (概念/行业各自独立配置, 作者维护)
-_CONCEPT_DATA_URL = "https://shy313.com/api/plugins/market_flow/exports/ths-concepts"
-_INDUSTRY_DATA_URL = "https://shy313.com/api/plugins/market_flow/exports/ths-industries"
+# fuyao 同花顺指数接口 (鉴权 X-api-key, 信封 {code, message, data:{item:[...]}})
+_FUYAO_BASE = "https://fuyao.aicubes.cn"
+_FUYAO_CATALOG_PATH = "/api/a-share-index/catalog/ths-index-list"
+_FUYAO_CONSTITUENTS_PATH = "/api/a-share-index/constituents/ths-stock-list"
+# 成分股逐板块拉取: 全量 710 次调用, 8 并发 + 单板块失败重试 1 次 (实测无 429)
+_FUYAO_CONCURRENCY = 8
+_FUYAO_TIMEOUT_S = 20.0
+_FUYAO_BOARD_RETRIES = 1
 
 
 # ---------------------------------------------------------------------------
@@ -41,7 +52,7 @@ _INDUSTRY_DATA_URL = "https://shy313.com/api/plugins/market_flow/exports/ths-ind
 def _concept_preset() -> ExtConfig:
     """扩展概念 (ext_gn_ths)。
 
-    接口结构: [{symbol, name, concepts: [概念1, 概念2, ...]}]
+    接口结构 (fuyao 反转后): [{symbol, name, concepts: [概念1, 概念2, ...]}]
     本地 schema: 股票代码 / 股票简称 / 所属概念(分号拼接) / symbol / code
     """
     return ExtConfig(
@@ -55,11 +66,12 @@ def _concept_preset() -> ExtConfig:
             ExtField("股票简称", "string", "股票简称"),
             ExtField("所属概念", "string", "所属概念"),
         ],
-        description="同花顺概念分类 (启动仅创建配置, 在概念/行业页手动获取)",
+        description="同花顺概念分类 (fuyao 同花顺指数接口; 启动仅创建配置, 在概念/行业页手动获取)",
         symbol_map={"type": "mapped", "col": "股票代码"},
         code_map={"type": "computed", "from": "symbol", "method": "strip_exchange"},
         pull=PullConfig(
-            url=_CONCEPT_DATA_URL,
+            # url 仅作配方标识: 实际拉取走 fetch_preset 的 fuyao 反转路径
+            url=f"{_FUYAO_BASE}{_FUYAO_CATALOG_PATH}?tag=cn_concept",
             method="GET",
             schedule_minutes=1440,
             # enabled=False: ensure_builtin_presets 承诺启动不拉取, PullScheduler
@@ -72,7 +84,8 @@ def _concept_preset() -> ExtConfig:
 def _industry_preset() -> ExtConfig:
     """扩展行业 (ext_hy_ths)。
 
-    接口结构: [{symbol, name, industries: [一级行业, 二级行业, 三级行业]}]
+    接口结构 (fuyao 反转后): [{symbol, name, industries: [行业板块名, ...]}]
+    — fuyao 为扁平板块清单, 无一/二/三级层级路径, 单级粒度。
     本地 schema: 股票代码 / 股票简称 / 所属同花顺行业(横杠拼接) / symbol / code
     """
     return ExtConfig(
@@ -86,11 +99,11 @@ def _industry_preset() -> ExtConfig:
             ExtField("股票简称", "string", "股票简称"),
             ExtField("所属同花顺行业", "string", "所属同花顺行业"),
         ],
-        description="同花顺行业分类 (启动仅创建配置, 在概念/行业页手动获取)",
+        description="同花顺行业分类 (fuyao 同花顺指数接口, 扁平板块无层级; 启动仅创建配置, 在概念/行业页手动获取)",
         symbol_map={"type": "mapped", "col": "股票代码"},
         code_map={"type": "computed", "from": "symbol", "method": "strip_exchange"},
         pull=PullConfig(
-            url=_INDUSTRY_DATA_URL,
+            url=f"{_FUYAO_BASE}{_FUYAO_CATALOG_PATH}?tag=industry",
             method="GET",
             schedule_minutes=1440,
             # 同概念 preset: 出厂禁用, 避免启动即网络拉取 (#199)
@@ -165,61 +178,128 @@ def _flatten_industry_rows(raw_rows: list[dict]) -> list[dict]:
 
 
 # ---------------------------------------------------------------------------
-# 拉取执行 (复用 httpx, 不依赖 fetch_and_ingest 的 PullConfig 路径)
+# fuyao 拉取: 板块清单 + 逐板块成分股 → 反转成「股票→板块名」行
+# (复用 httpx, 不依赖 fetch_and_ingest 的 PullConfig 路径)
 # ---------------------------------------------------------------------------
 
-# 部分网络环境 (CDN/WAF/网关) 会把数组包成 {data: [...]}/{list: [...]}/{rows: [...]} 信封。
-# 这里做一次兼容解包, 避免误判为「接口返回不是数组」。
-_ENVELOPE_KEYS = ("data", "list", "rows", "result", "results")
 
-
-async def _fetch_json(url: str) -> list[dict]:
-    """请求 JSON 接口, 返回行数组。超时 30s, 失败抛异常由调用方兜底。
-
-    兼容两种上游返回形态:
-      - 直接是数组: [{...}, ...]          → 原样返回
-      - 信封包裹: {data: [{...}]} 等       → 自动解包
+def _fuyao_api_key() -> str:
+    """取 fuyao API Key — 与 app/plugins/fuyao/provider.py 共用同一凭据存储
+    (secrets.json 的 fuyao_api_key 优先, 后备 FUYAO_API_KEY 环境变量)。
+    不 import 插件模块, 保持核心服务不依赖插件; 两处字段名需同步维护。
     """
-    import httpx
+    from app import secrets_store
+
+    return secrets_store.get_env_backed_secret("fuyao_api_key", "FUYAO_API_KEY")
+
+
+async def _fuyao_get_items(
+    client: httpx.AsyncClient, path: str, params: dict
+) -> list[dict]:
+    """GET + fuyao 信封解包 ({code, message, data:{item:[...]}}), 返回 item 数组。"""
+    resp = await client.get(path, params=params)
+    if resp.status_code != 200:
+        raise ValueError(f"fuyao HTTP {resp.status_code}: {path}")
+    try:
+        payload = resp.json()
+    except ValueError as e:
+        raise ValueError(f"fuyao 响应不是 JSON: {path}") from e
+    if payload.get("code") != 0:
+        raise ValueError(
+            f"fuyao code={payload.get('code')}: {payload.get('message') or path}"
+        )
+    items = (payload.get("data") or {}).get("item")
+    if not isinstance(items, list):
+        raise ValueError(f"fuyao 响应缺少 data.item: {path}")
+    return items
+
+
+async def _fetch_dimension_rows(
+    tag: str,
+    list_key: str,
+    transport: httpx.AsyncBaseTransport | None = None,
+) -> list[dict]:
+    """fuyao 板块清单 + 逐板块成分股 → 反转为「股票→板块名清单」行。
+
+    返回与旧种子源同构: [{symbol, name, list_key: [板块名, ...]}];
+    每只股票的板块名顺序跟随目录顺序, 保证拼接结果稳定。
+
+    容错: 单板块成分股失败重试 1 次仍失败则跳过 (记 warning, 缺一两个板块
+    远好于整次拉取失败); 目录失败或全部板块失败才抛错。
+
+    transport 仅供测试注入 MockTransport, 生产传 None。
+    """
+    api_key = _fuyao_api_key()
+    if not api_key:
+        raise ValueError(
+            "未配置 fuyao API Key — 在 设置 → 数据源 填写, 或配置环境变量 FUYAO_API_KEY"
+        )
 
     # 延迟导入避免与 ext_pull 循环依赖; 出站请求带 tsp 标识头
     from app.services.ext_pull import outbound_headers
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        resp = await client.get(url, headers=outbound_headers())
-        resp.raise_for_status()
-        data = resp.json()
+    sem = asyncio.Semaphore(_FUYAO_CONCURRENCY)
 
-    if isinstance(data, list):
-        return data
+    async with httpx.AsyncClient(
+        base_url=_FUYAO_BASE,
+        headers={"X-api-key": api_key, **outbound_headers()},
+        timeout=_FUYAO_TIMEOUT_S,
+        transport=transport,
+    ) as client:
+        boards = await _fuyao_get_items(client, _FUYAO_CATALOG_PATH, {"tag": tag})
+        boards = [
+            b
+            for b in boards
+            if isinstance(b, dict) and (b.get("thscode") or "").strip()
+            and (b.get("name") or "").strip()
+        ]
+        if not boards:
+            raise ValueError(f"fuyao 板块目录为空: tag={tag}")
 
-    # 信封解包: 在常见键里找第一个值为数组的
-    if isinstance(data, dict):
-        for key in _ENVELOPE_KEYS:
-            inner = data.get(key)
-            if isinstance(inner, list):
-                return inner
-        # 兜底: 遍历所有值, 取第一个数组
-        for v in data.values():
-            if isinstance(v, list):
-                return v
+        async def _members(board: dict) -> list[dict] | None:
+            """单板块成分股; 失败重试后仍失败返回 None (由聚合方跳过)。"""
+            params = {"thscode": board["thscode"]}
+            async with sem:
+                for attempt in range(_FUYAO_BOARD_RETRIES + 1):
+                    try:
+                        return await _fuyao_get_items(
+                            client, _FUYAO_CONSTITUENTS_PATH, params
+                        )
+                    except Exception:  # noqa: BLE001 — 单板块失败容忍: 重试后跳过
+                        if attempt == _FUYAO_BOARD_RETRIES:
+                            return None
+                        await asyncio.sleep(0.5)
 
-    raise ValueError(
-        f"接口返回不是数组 (type={type(data).__name__}), "
-        f"响应预览: {str(data)[:200]}"
-    )
+        members_list = await asyncio.gather(*(_members(b) for b in boards))
 
+    stocks: dict[str, dict] = {}
+    failed: list[str] = []
+    for board, members in zip(boards, members_list, strict=True):
+        if members is None:
+            failed.append(board["name"])
+            continue
+        for m in members:
+            sym = (m.get("thscode") or "").strip()
+            if not sym:
+                continue
+            entry = stocks.get(sym)
+            if entry is None:
+                entry = {"symbol": sym, "name": m.get("name") or "", list_key: []}
+                stocks[sym] = entry
+            # 目录内板块名去重 (同名板块不叠加)
+            if board["name"] not in entry[list_key]:
+                entry[list_key].append(board["name"])
 
-async def _seed_one(config: ExtConfig, flatten, data_dir: Path) -> int:
-    """拉取 + 转换 + 写入单个预设。返回写入行数。"""
-    from datetime import date
-
-    raw = await _fetch_json(config.pull.url)
-    rows = flatten(raw)
-    if not rows:
-        raise ValueError(f"接口返回 0 行: {config.pull.url}")
-    n = rows_to_parquet(rows, config, data_dir, snapshot_date=date.today())
-    return n
+    if failed:
+        logger.warning(
+            "fuyao 板块成分股拉取失败 %d/%d (已跳过): %s",
+            len(failed),
+            len(boards),
+            "、".join(failed[:5]),
+        )
+    if not stocks:
+        raise ValueError(f"fuyao 全部板块成分股拉取失败: tag={tag}")
+    return list(stocks.values())
 
 
 # ---------------------------------------------------------------------------
@@ -254,28 +334,38 @@ async def ensure_builtin_presets(data_dir: Path) -> None:
         try:
             store.upsert(config)
             logger.info("内置扩展表 %s 配置已就绪 (待用户手动获取数据)", config.id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 — 启动契约: 预设写入失败不阻断
             logger.warning("内置扩展表 %s 配置写入失败 (不影响启动): %s", config.id, e)
 
 
 async def fetch_preset(config_id: str, data_dir: Path) -> int:
     """手动触发某个预设的数据拉取 (供 API 调用)。
 
+    数据源为 fuyao 同花顺指数接口 (板块清单 + 成分股反转), 行结构与旧种子源
+    同构, flatten / parquet 落盘路径不变。
+
     Raises:
         ValueError: config_id 不是内置预设
         Exception: 网络请求/解析/写入失败 (由 API 层转 HTTP 错误)
     """
-    config = get_preset(config_id)
-    if config is None:
+    if config_id == "ext_gn_ths":
+        tag, list_key, flatten = "cn_concept", "concepts", _flatten_concept_rows
+    elif config_id == "ext_hy_ths":
+        tag, list_key, flatten = "industry", "industries", _flatten_industry_rows
+    else:
         raise ValueError(f"未知的内置预设: {config_id}")
-
-    flatten = _flatten_concept_rows if config_id == "ext_gn_ths" else _flatten_industry_rows
+    config = get_preset(config_id)
+    assert config is not None  # 上面分支已保证
 
     # 确保 config.json 存在 (用户可能从未启动过 ensure_builtin_presets)
     store = ExtConfigStore(data_dir)
     if store.get(config_id) is None:
         store.upsert(config)
 
-    n = await _seed_one(config, flatten, data_dir)
+    raw = await _fetch_dimension_rows(tag, list_key)
+    rows = flatten(raw)
+    if not rows:
+        raise ValueError(f"接口返回 0 行: {config_id}")
+    n = rows_to_parquet(rows, config, data_dir, snapshot_date=date.today())
     logger.info("内置扩展表 %s 手动拉取成功: %d 行", config_id, n)
     return n
