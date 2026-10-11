@@ -2185,6 +2185,18 @@ export interface SectorRotationUniverseItem {
   excluded?: boolean
 }
 
+/** 页面包元数据 — data/ext_pages/{id}/page.json, 后端源 app/services/ext_pages.py */
+export interface RuntimePagePack {
+  id: string
+  enabled: boolean
+  label: string
+  path: string
+  size: number
+  sha256: string
+  uploaded_at: number
+  error: string
+}
+
 // ===== API surface =====
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
@@ -3282,6 +3294,32 @@ export const api = {
 
   analysisMenus: () =>
     request<{ items: AnalysisMenu[] }>('/api/analysis-menus'),
+
+  // ===== 页面包 (运行时扩展页面, 见 docs/page-sdk.md) =====
+  extPagesList: () =>
+    request<RuntimePagePack[]>('/api/ext-pages'),
+
+  extPagesUpload: (id: string, file: File) => {
+    const fd = new FormData()
+    fd.append('id', id)
+    fd.append('file', file)
+    return request<RuntimePagePack>('/api/ext-pages/upload', { method: 'POST', body: fd })
+  },
+
+  extPagesPutManifest: (id: string, body: { label: string; path: string; error: string }) =>
+    request<RuntimePagePack>(`/api/ext-pages/${encodeURIComponent(id)}/manifest`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    }),
+
+  extPagesPutEnabled: (id: string, enabled: boolean) =>
+    request<RuntimePagePack>(`/api/ext-pages/${encodeURIComponent(id)}/enabled`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled }),
+    }),
+
+  extPagesDelete: (id: string) =>
+    request<{ ok: boolean }>(`/api/ext-pages/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 
   analysisMenu: (id: string) =>
     request<AnalysisMenu>(`/api/analysis-menus/${encodeURIComponent(id)}`),

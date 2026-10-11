@@ -20,6 +20,7 @@ from app.api import (
     data,
     events,
     ext_data,
+    ext_pages,
     factors,
     financials,
     indices,
@@ -550,6 +551,7 @@ app.include_router(analysis.router)
 app.include_router(pipeline.router)
 app.include_router(data.router)
 app.include_router(ext_data.router)
+app.include_router(ext_pages.router)
 app.include_router(financials.router)
 app.include_router(stock_analysis.router)
 app.include_router(market_recap.router)
