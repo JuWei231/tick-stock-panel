@@ -1,6 +1,12 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest'
-import { DEFAULT_NAV_PATHS, compareByDefaultNav, defaultNavIndex } from './navOrder'
+import {
+  DEFAULT_NAV_PATHS,
+  EXT_DOMAIN_PAGE_PATHS,
+  compareByDefaultNav,
+  defaultNavIndex,
+  seedHiddenForNewUser,
+} from './navOrder'
 
 // 迁移前 Layout 核心导航数组的原序 (2026-10 扩展域迁移快照)。
 // 这是老用户升级兼容的锚点数据: 改动任何一个位置都意味着某类未保存
@@ -31,5 +37,32 @@ describe('navOrder: 迁移前默认排序基准', () => {
     const sorted = [...paths].sort(compareByDefaultNav)
     // 两个未知道径保持原始相对顺序 (company/risk 在 analysis/x 前)
     expect(sorted).toEqual(['/', '/watchlist', '/monitor', '/data', '/company/risk', '/analysis/x'])
+  })
+})
+
+describe('seedHiddenForNewUser: 新装用户默认隐藏种子', () => {
+  it('扩展域页面清单与默认基准一致且共 11 项', () => {
+    expect(EXT_DOMAIN_PAGE_PATHS).toHaveLength(11)
+    for (const p of EXT_DOMAIN_PAGE_PATHS) {
+      expect(defaultNavIndex(p)).not.toBe(Number.POSITIVE_INFINITY)
+    }
+  })
+
+  it('新用户 (未完成 onboarding): 11 个扩展页并入隐藏清单', () => {
+    const next = seedHiddenForNewUser(false, [])
+    expect(next).not.toBeNull()
+    for (const p of EXT_DOMAIN_PAGE_PATHS) expect(next).toContain(p)
+  })
+
+  it('新用户已有隐藏项: 取并集不丢失', () => {
+    const next = seedHiddenForNewUser(false, ['/indices'])
+    expect(next).toContain('/indices')
+    expect(next).toContain('/review')
+    expect(new Set(next).size).toBe(next!.length)
+  })
+
+  it('老用户 (已完成 onboarding) 与未知状态: 不动, 返回 null', () => {
+    expect(seedHiddenForNewUser(true, [])).toBeNull()
+    expect(seedHiddenForNewUser(undefined, [])).toBeNull()
   })
 })

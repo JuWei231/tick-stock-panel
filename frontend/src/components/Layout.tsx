@@ -21,7 +21,7 @@ import {
   useToggleRealtimeQuotes,
 } from '@/lib/useSharedMutations'
 import { QK } from '@/lib/queryKeys'
-import { compareByDefaultNav, defaultNavIndex } from '@/lib/navOrder'
+import { compareByDefaultNav, defaultNavIndex, seedHiddenForNewUser } from '@/lib/navOrder'
 import {
   Settings,
   DatabaseZap,
@@ -581,6 +581,28 @@ export function Layout() {
 
   const hiddenIds = new Set(prefs?.nav_hidden ?? [])
   const visibleNavItems = navItems.filter(n => !hiddenIds.has(n.to) && !hiddenIds.has(n.to.replace(/^\/analysis\//, '')))
+
+  // 新装用户一次性种子: 扩展域页面默认隐藏, 菜单设置里可逐个开启。
+  // 老用户 (升级前已完成 onboarding) 只写标记不动偏好, 升级前后侧栏一致。
+  // 种子标记存 localStorage (每设备一次, 保存成功后才写); 隐藏偏好本体持久化在后端 nav_hidden。
+  const extSeedRef = useRef(false)
+  useEffect(() => {
+    if (!prefs || !settingsState || extSeedRef.current) return
+    let seeded = false
+    try { seeded = localStorage.getItem('tf-ext-pages-seed') === '1' } catch { return }
+    if (seeded) { extSeedRef.current = true; return }
+    const next = seedHiddenForNewUser(settingsState.onboarding_completed, prefs.nav_hidden)
+    if (!next) {
+      extSeedRef.current = true
+      try { localStorage.setItem('tf-ext-pages-seed', '1') } catch {}
+      return
+    }
+    extSeedRef.current = true
+    api.saveNavHidden(next)
+      .then(() => { try { localStorage.setItem('tf-ext-pages-seed', '1') } catch {} })
+      .then(() => qc.invalidateQueries({ queryKey: QK.preferences }))
+      .catch(() => { /* 保存失败不写标记, 下次启动重试; 结果集幂等, 重复触发无害 */ })
+  }, [prefs, settingsState, qc])
 
   const doEnableRealtime = async () => {
     await toggleQuote.mutateAsync(true)

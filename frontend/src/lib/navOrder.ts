@@ -34,3 +34,29 @@ export function compareByDefaultNav(a: string, b: string): number {
   if (ia === ib) return 0
   return ia - ib
 }
+
+/**
+ * 扩展域页面路径 (迁移到 custom/ 的 11 个官方页面)。
+ * 新装用户的一次性种子会把它们写入 nav_hidden 默认隐藏;
+ * 老用户 (升级前已完成 onboarding) 不受影响。用户随时可在
+ * 设置 → 菜单设置 里点眼睛图标逐个开启。
+ */
+export const EXT_DOMAIN_PAGE_PATHS: readonly string[] = [
+  '/stock-analysis', '/limit-ladder', '/concept-analysis', '/industry-analysis', '/financials',
+  '/monitor', '/abnormal', '/lots', '/paper', '/signals', '/review',
+]
+
+/**
+ * 新装用户种子: 返回应写入 nav_hidden 的完整列表 (与已有隐藏项取并集);
+ * 老用户返回 null 表示不动。判定信号是 onboarding_completed —— 首启
+ * 向导强制完成, 升级前用过应用的用户必然为 true。
+ */
+export function seedHiddenForNewUser(
+  onboardingCompleted: boolean | undefined,
+  currentHidden: readonly string[] | null | undefined,
+): string[] | null {
+  if (onboardingCompleted !== false) return null
+  const hidden = new Set(currentHidden ?? [])
+  for (const p of EXT_DOMAIN_PAGE_PATHS) hidden.add(p)
+  return [...hidden]
+}
