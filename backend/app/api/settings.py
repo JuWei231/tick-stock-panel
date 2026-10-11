@@ -60,6 +60,7 @@ def get_settings() -> dict:
         current_ai_context_window,
         current_ai_max_output_tokens,
         current_ai_model,
+        current_ai_protocol,
         current_ai_round_checkpoint,
         current_codex_command,
         current_codex_model,
@@ -81,8 +82,11 @@ def get_settings() -> dict:
         "extras_caps": extras_caps(),
         # 首次使用引导
         "onboarding_completed": preferences.get_onboarding_completed(),
+        # 配置文件位置 (AI 与数据源 Key 统一存放, 支持外部编辑后热加载)
+        "secrets_path": str(secrets_store.file_path()),
         # AI 配置
         "ai_provider": ai_provider,
+        "ai_protocol": current_ai_protocol(),
         "ai_base_url": secrets_store.get_ai_config("ai_base_url", settings.ai_base_url),
         "ai_api_key_masked": secrets_store.mask(secrets_store.get_ai_key()),
         "has_ai_key": bool(secrets_store.get_ai_key()),
@@ -254,6 +258,7 @@ class AiSettingsIn(BaseModel):
     base_url: str = ""
     api_key: str | None = None
     model: str = ""
+    protocol: str = ""              # chat_completions | responses; 空=保持原值
     reasoning_effort: str = Field(default="high", max_length=64)
     codex_command: str = ""
     codex_reasoning_effort: str = ""
@@ -263,16 +268,63 @@ class AiSettingsIn(BaseModel):
     round_checkpoint: int | None = None    # 助手工具轮次检查点; 0=不检查
 
 
+class AiTestIn(BaseModel):
+    """草稿连通性测试入参 — 只读表单值, 与保存完全解耦。"""
+
+    provider: str = "openai_compat"
+    base_url: str = ""
+    api_key: str | None = None      # 留空回退已保存 Key (改模型/协议不必重输)
+    model: str = ""
+    protocol: str = ""
+
+
+@router.post("/ai/test")
+async def test_ai_settings(req: AiTestIn) -> dict:
+    """用当前表单值发一次最小请求验证连通性, 不保存/不修改任何配置。
+
+    与 POST /ai (保存) 解耦: 测试失败不影响已保存配置, 状态栏也不会把
+    未验证的草稿展示为已生效。错误保留 200 包体 (ok=false), 由前端内联
+    展示在测试结果徽章, 不触发全局 toast。
+    """
+    from app.services.ai_provider import (
+        RESPONSES_PROTOCOL,
+        _format_openai_error,
+        _is_openai_transport_error,
+        probe_ai_config,
+    )
+
+    provider = req.provider or "openai_compat"
+    api_key = (req.api_key or "").strip() or (secrets_store.get_ai_key() or "")
+    protocol = req.protocol if req.protocol == RESPONSES_PROTOCOL else ""
+    try:
+        text = await probe_ai_config(
+            provider=provider,
+            api_key=api_key,
+            base_url=req.base_url.strip(),
+            model=req.model.strip(),
+            protocol=protocol,
+        )
+    except Exception as exc:  # noqa: BLE001 — 连通性测试: 任何异常都转为结果回报
+        detail = str(exc) or repr(exc)
+        if _is_openai_transport_error(exc):
+            detail = _format_openai_error(exc)
+        return {"ok": False, "error": detail, "error_type": type(exc).__name__}
+    return {"ok": True, "model": req.model.strip() or provider, "response": text[:80]}
+
+
 @router.post("/ai")
 def save_ai_settings(req: AiSettingsIn) -> dict:
     """保存 AI 配置（全部持久化到 secrets.json）"""
     from app.config import settings
     from app.services.ai_provider import (
+        CHAT_COMPLETIONS_PROTOCOL,
         OPENAI_PROVIDER,
+        RESPONSES_PROTOCOL,
         ai_configured,
         current_ai_context_window,
         current_ai_max_output_tokens,
         current_ai_model,
+        current_ai_protocol,
         current_ai_provider,
         current_ai_round_checkpoint,
         current_codex_command,
@@ -304,6 +356,12 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
         if req.base_url:
             updates["ai_base_url"] = req.base_url
             settings.ai_base_url = req.base_url
+        if req.protocol:
+            # 协议仅对 openai/openai_compat 有意义; 非法值 fail-loud, 避免静默落错协议。
+            if req.protocol not in (CHAT_COMPLETIONS_PROTOCOL, RESPONSES_PROTOCOL):
+                raise HTTPException(status_code=400, detail=f"不支持的协议: {req.protocol}")
+            updates["ai_protocol"] = req.protocol
+            settings.ai_protocol = req.protocol
         if req.api_key is not None:
             if req.api_key:
                 updates["ai_api_key"] = req.api_key
@@ -345,6 +403,7 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
     return {
         "ok": True,
         "ai_provider": provider,
+        "ai_protocol": current_ai_protocol(),
         "ai_model": current_ai_model(),
         "ai_openai_model": current_openai_model(),
         "ai_reasoning_effort": current_openai_reasoning_effort(),
@@ -376,9 +435,10 @@ def clear_ai_settings() -> dict:
         "ai_codex_command",
         "ai_codex_reasoning_effort",
     )
-    secrets_store.clear("ai_provider", "ai_base_url", "ai_api_key", "ai_model", "ai_codex_command", "ai_codex_reasoning_effort", "ai_max_output_tokens", "ai_context_window")
+    secrets_store.clear("ai_provider", "ai_protocol", "ai_base_url", "ai_api_key", "ai_model", "ai_codex_command", "ai_codex_reasoning_effort", "ai_max_output_tokens", "ai_context_window")
     # 同步重置运行时内存(provider 回默认值,其余置空)
     settings.ai_provider = "openai_compat"
+    settings.ai_protocol = "chat_completions"
     settings.ai_base_url = ""
     settings.ai_api_key = ""
     settings.ai_model = ""
@@ -396,6 +456,10 @@ async def list_sponsor_models() -> dict:
 
     其网关按 Origin 头过滤: 浏览器跨域请求只会拿到国产模型子集,
     服务端请求无 Origin 头可取全量, 故由后端代理转发。
+
+    /v1/models 除 id 外还携带 pricing (discountRate/分层单价) 与
+    context_length; 精简为 items 下发供前端展示折扣徽章与价格,
+    models 保持纯 id 列表向后兼容。
     """
     import httpx
 
@@ -406,11 +470,30 @@ async def list_sponsor_models() -> dict:
             data = res.json()
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"获取模型列表失败: {exc}") from exc
-    models = sorted({
-        item.get("id") for item in data.get("data", [])
-        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]
-    })
-    return {"models": models}
+
+    def _amount(pricing: dict, dim: str) -> float | None:
+        value = (pricing.get(dim) or {}).get("amount")
+        return float(value) if isinstance(value, (int, float)) else None
+
+    items: list[dict] = []
+    for raw in data.get("data", []):
+        if not isinstance(raw, dict):
+            continue
+        model_id = raw.get("id")
+        if not isinstance(model_id, str) or not model_id:
+            continue
+        pricing = raw.get("pricing") if isinstance(raw.get("pricing"), dict) else {}
+        rate = pricing.get("discountRate")
+        context_length = raw.get("context_length")
+        items.append({
+            "id": model_id,
+            "context_length": context_length if isinstance(context_length, int) else None,
+            "discount_rate": float(rate) if isinstance(rate, (int, float)) else 1.0,
+            "input_price": _amount(pricing, "input"),
+            "output_price": _amount(pricing, "output"),
+        })
+    items.sort(key=lambda x: x["id"])
+    return {"models": [item["id"] for item in items], "items": items}
 
 
 # ===== 偏好设置 =====
