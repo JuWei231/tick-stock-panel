@@ -1295,6 +1295,48 @@ class MainlineFilterIn(BaseModel):
     exclude_st: bool | None = None
 
 
+class EmotionScoreConfigIn(BaseModel):
+    """情绪评分口径 (维度权重 / 子项权重与归一化区间 / 档位阈值)。
+
+    config 为整棵树或 null — 传 null 表示恢复出厂口径。不做逐字段白名单:
+    结构由 emotion_score.merge_config 归一化 (未知 key 丢弃、缺项补默认、
+    阈值乱序自动重排), 用户改坏权重也不会让看板算不出分。
+    """
+
+    config: dict | None = None
+
+
+@router.get("/emotion-score/config")
+def get_emotion_score_config() -> dict:
+    """情绪评分口径: 当前配置 + 出厂默认 + 维度顺序 + 档位名。
+
+    看板「情绪雷达」卡片的配置对话框一次拉全 —— 前端不硬编码任何权重/区间/
+    阈值字面量, 表单全部由本接口返回的结构渲染。
+    """
+    from app.services import preferences
+    from app.services.emotion_score import public_config
+
+    payload = public_config(preferences.get_emotion_score_config())
+    payload["customized"] = preferences.get_emotion_score_config() is not None
+    return payload
+
+
+@router.put("/emotion-score/config")
+def update_emotion_score_config(req: EmotionScoreConfigIn) -> dict:
+    """保存情绪评分口径; config 传 null/{} = 恢复出厂。
+
+    形状校验在 preferences 层 (经 emotion_score.merge_config), 值的合法性
+    (负权重/区间倒置/阈值乱序) 由计算时归一化兜底, 故此处不做逐字段白名单。
+    """
+    from app.services import preferences
+    from app.services.emotion_score import public_config
+
+    saved = preferences.set_emotion_score_config(req.config)
+    payload = public_config(saved)
+    payload["customized"] = saved is not None
+    return payload
+
+
 @router.put("/preferences/mainline-filter")
 def update_mainline_filter(req: MainlineFilterIn) -> dict:
     """更新市场主线过滤配置。部分更新; 修改后需重算主线(POST /api/regime/mainline/recompute)生效。

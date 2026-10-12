@@ -680,6 +680,40 @@ export interface MainlineFilter {
   exclude_st: boolean
 }
 
+// ===== 情绪评分口径 (看板「情绪雷达」配置对话框) =====
+
+/** 一个子项: 原始指标 → [low, high] 归一化到 0..100, 再按 weight 参与维度合成 */
+export interface EmotionScoreTerm {
+  key: string
+  label: string
+  weight: number
+  low: number
+  high: number
+  unit: string
+}
+
+/** 一个维度: 由若干子项加权得到 0..100; invert = 逆向指标 (分越高盘面越差, 取反) */
+export interface EmotionScoreDimension {
+  label: string
+  weight: number
+  invert?: boolean
+  terms: EmotionScoreTerm[]
+}
+
+export interface EmotionScoreConfig {
+  dimensions: Record<string, EmotionScoreDimension>
+  /** 档位阈值: score ≥ strong → 强势, ≥ warm → 偏暖, … 递减 */
+  thresholds: Record<string, number>
+}
+
+export interface EmotionScoreConfigPayload {
+  config: EmotionScoreConfig
+  defaults: EmotionScoreConfig
+  dimension_order: string[]
+  labels: { key: string; name: string }[]
+  customized: boolean
+}
+
 export interface MainlineResult {
   rows: MainlineRow[]
   leaders: MainlineLeader[]
@@ -2962,6 +2996,17 @@ export const api = {
     request<MainlineFilter>('/api/settings/preferences/mainline-filter', {
       method: 'PUT',
       body: JSON.stringify(payload),
+    }),
+
+  /** 情绪评分口径: 当前配置 + 出厂默认 (表单完全由返回值渲染, 前端不硬编码权重) */
+  emotionScoreConfig: () =>
+    request<EmotionScoreConfigPayload>('/api/settings/emotion-score/config'),
+
+  /** 保存情绪评分口径; config 传 null = 恢复出厂口径 */
+  emotionScoreConfigUpdate: (config: EmotionScoreConfig | null) =>
+    request<EmotionScoreConfigPayload>('/api/settings/emotion-score/config', {
+      method: 'PUT',
+      body: JSON.stringify({ config }),
     }),
 
   limitLadder: (asOf?: string, extColumns?: string, direction?: 'up' | 'down') => {
