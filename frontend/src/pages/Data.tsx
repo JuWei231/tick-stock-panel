@@ -47,6 +47,7 @@ import { ScheduleEditor } from '@/components/data/ScheduleEditor'
 import { ExtendHistoryPanel } from '@/components/data/ExtendHistoryPanel'
 import { RepairDailyPanel } from '@/components/data/RepairDailyPanel'
 import { EnrichedRebuildPanel } from '@/components/data/EnrichedRebuildPanel'
+import { FinancialSyncPanel } from '@/components/data/FinancialSyncPanel'
 import { MinuteSyncConfig } from '@/components/data/MinuteSyncConfig'
 import { AdjFactorSyncConfig } from '@/components/data/AdjFactorSyncConfig'
 import { RegimeConfigCard } from '@/components/data/RegimeConfigCard'
@@ -560,8 +561,11 @@ export function Data() {
             capLimits={mergedCaps}
             customProvider={routeProviderDisplay(matrix.data, 'financial')}
             subLabel={`历史股本 · ${historicalShareRows.toLocaleString()} 条`}
+            // 财务不在盘后管道内, 顶部「立即同步」不含它 —— 给出独立的拉取入口
+            onPull={() => setOpenSettings(v => v === 'financial-sync' ? null : 'financial-sync')}
+            pullTitle="手动拉取财务数据"
             onSettings={hasData ? () => setOpenSettings(v => v === 'financials' ? null : 'financials') : undefined}
-            settingsOpen={openSettings === 'financials'}
+            settingsOpen={openSettings === 'financials' || openSettings === 'financial-sync'}
           />
         )
       }
@@ -1055,6 +1059,11 @@ export function Data() {
               historicalShareRows={s?.financials?.tables?.shares?.rows ?? 0}
               onStart={(jobId) => { setActiveJobId(jobId); setOpenSettings(null) }}
             />
+          </SettingsModal>
+        )}
+        {openSettings === 'financial-sync' && (
+          <SettingsModal title="财务数据 · 手动拉取" onClose={() => setOpenSettings(null)} width="max-w-lg">
+            <FinancialSyncPanel />
           </SettingsModal>
         )}
       </AnimatePresence>
