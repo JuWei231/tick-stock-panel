@@ -34,6 +34,9 @@ const PAGE_LIMIT = 12000
 const MAX_RENDERED_INDUSTRIES = 120
 const MAX_RENDERED_STOCKS = 160
 
+/** 内置行业预设 id — 本页的数据来源与「未获取」引导按钮都锚定它 */
+const PRESET_INDUSTRY_ID = 'ext_hy_ths'
+
 type SortMode = 'heat' | 'avgPct' | 'leader' | 'amount' | 'down'
 type IndustryLevel = 1 | 2 | 3
 
@@ -83,6 +86,10 @@ function saveConfig(c: AnalysisFieldConfig) {
 function pickBestConfig(
   configs: { id: string; label: string; description?: string; fields: { name: string; label: string }[] }[],
 ): string {
+  // 内置预设优先: 关键词打分会被「描述里互相提及对方」污染 —— 概念表描述含
+  // "概念/行业页", 行业表描述含"板块", 导致本页可能选中概念表 (拿不到数据,
+  // 且「未获取」引导按钮因 id 不匹配而不渲染)。预设存在时直接用它。
+  if (configs.some(c => c.id === PRESET_INDUSTRY_ID)) return PRESET_INDUSTRY_ID
   let best = '', bestScore = 0
   for (const c of configs) {
     const haystack = [c.id, c.label, c.description ?? '', ...c.fields.flatMap(f => [f.name, f.label])].join(' ').toLowerCase()
@@ -303,11 +310,11 @@ export function IndustryAnalysis() {
     enabled: !!activeConfigId,
   })
 
-  // 内置行业预设 (ext_hy_ths) 手动获取数据
-  const PRESET_INDUSTRY_ID = 'ext_hy_ths'
+  // 内置行业预设 (ext_hy_ths) 无数据时的一键拉取: 走通用拉取端点
+  // (与「数据」页扩展表的「执行」同一路径, 配方由表的 pull 配置决定)
   const queryClient = useQueryClient()
   const fetchMutation = useMutation({
-    mutationFn: () => api.extDataPresetFetch(PRESET_INDUSTRY_ID),
+    mutationFn: () => api.extDataPullRun(PRESET_INDUSTRY_ID),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: QK.extData })
       queryClient.invalidateQueries({ queryKey: QK.extDataRows(PRESET_INDUSTRY_ID, undefined, PAGE_LIMIT) })

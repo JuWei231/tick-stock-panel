@@ -3459,13 +3459,6 @@ export const api = {
       { method: 'POST', timeoutMs: timeoutMs ?? 600_000 },
     ),
 
-  // 内置预设 (概念/行业) 手动获取数据: 走结构转换, 保证 schema 一致
-  extDataPresetFetch: (id: string) =>
-    request<{ status: string; rows: number }>(
-      `/api/ext-data/presets/${id}/fetch`,
-      { method: 'POST' },
-    ),
-
   extDataDetectFields: (file: File) => {
     const fd = new FormData()
     fd.append('file', file)
@@ -4247,6 +4240,12 @@ export interface ExtPullAuth {
   type: 'none' | 'bearer' | 'header' | 'query'
   header?: string
   param?: string
+  /**
+   * 复用已有凭据而非本表专属 Key: 值为 secrets.json 的字段名
+   * (如 "fuyao_api_key")。UI 不暴露, 但保存时必须原样带回, 否则会把
+   * 出厂配方里的凭据引用抹掉。
+   */
+  key_ref?: string
 }
 
 export interface PullConfig {
@@ -4284,6 +4283,39 @@ export interface PullConfig {
   page_start?: number
   /** 分页安全上限, 默认 20 (防接口永远返回数据拖死循环) */
   max_pages?: number
+  /**
+   * 两级拉取配方 (目录 → 逐条目明细): 数据源只给「类别清单」+「单类别成员」,
+   * 需要扇出请求再反转行方向时使用 (如同花顺概念/行业)。配置后通用拉取
+   * 自动走上这条路径, 无需任何按表硬编码。
+   */
+  fanout?: PullFanout | null
+}
+
+export interface PullFanout {
+  /** 第二级请求地址 */
+  url: string
+  /** 第二级请求的查询参数名, 取值为第一级条目的 id_field */
+  param: string
+  /** 第一级条目中作为第二级参数的字段 */
+  id_field: string
+  /** 第一级条目中作展示名的字段 (可选, 仅用于告警文案) */
+  label_field?: string
+  /** 第二级响应里成员数组的 dot-path (留空 = 响应本身即数组) */
+  items_path?: string
+  /** 成员对象里取标的代码的字段 */
+  member_id_field: string
+  /** 成员对象里取标的名称的字段 (可选) */
+  member_label_field?: string
+  /** 输出列名: 标的代码 */
+  symbol_col: string
+  /** 输出列名: 标的名称 */
+  name_col: string
+  /** 输出列名: 拼接后的类别 */
+  value_col: string
+  /** 多类别拼接符 (概念用 ";", 行业层级用 "-") */
+  separator?: string
+  concurrency?: number
+  retries?: number
 }
 
 export interface ExtDataBackfillResult {
