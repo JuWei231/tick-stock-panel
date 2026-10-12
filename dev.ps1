@@ -165,10 +165,33 @@ if (-not (Test-Path (Join-Path $BackendDir '.venv')) -or $BackendExtraArgs.Count
     Log-Ok 'backend deps installed'
 }
 
-if (-not (Test-Path (Join-Path $FrontendDir 'node_modules'))) {
+# pnpm 把安装时的锁文件副本留在 node_modules/.pnpm/lock.yaml。仅判断 node_modules
+# 是否存在会漏掉「拉到已改依赖的提交、但旧 node_modules 还在」的情况, 此时 Vite 会以
+# "imported but could not be resolved" 启动失败。副本与仓库锁文件不一致就重装。
+function Test-FrontendDepsOutdated {
+    $LockFile      = Join-Path $FrontendDir 'pnpm-lock.yaml'
+    $InstalledLock = Join-Path $FrontendDir 'node_modules\.pnpm\lock.yaml'
+    # 缺少任一锁文件时不判定过期: 交给 pnpm install 自己解析。
+    if (-not (Test-Path $LockFile) -or -not (Test-Path $InstalledLock)) { return $false }
+    # 按行比较并统一换行: Windows 检出可能是 CRLF, 而 pnpm 写出的副本是 LF。
+    $expected  = ((Get-Content -Raw $LockFile)      -replace "`r`n", "`n")
+    $installed = ((Get-Content -Raw $InstalledLock) -replace "`r`n", "`n")
+    return $expected -cne $installed
+}
+
+$FrontendDepsMissing  = -not (Test-Path (Join-Path $FrontendDir 'node_modules'))
+$FrontendDepsOutdated = -not $FrontendDepsMissing -and (Test-FrontendDepsOutdated)
+
+if ($FrontendDepsMissing) {
     Log-Info 'first run - installing Node deps...'
+} elseif ($FrontendDepsOutdated) {
+    Log-Info 'frontend deps changed - syncing Node deps...'
+}
+
+if ($FrontendDepsMissing -or $FrontendDepsOutdated) {
     Push-Location $FrontendDir
-    try { & pnpm install } finally { Pop-Location }
+    # --frozen-lockfile 与后端 uv sync --frozen 一致: 装锁文件里钉住的版本, 不静默改写锁文件。
+    try { & pnpm install --frozen-lockfile } finally { Pop-Location }
     if ($LASTEXITCODE -ne 0) { Log-Err 'pnpm install failed'; exit 1 }
     Log-Ok 'frontend deps installed'
 }
