@@ -74,19 +74,6 @@ def test_batch_loads_panel_once_and_deduplicates_factors():
     assert all(item.error is None for item in result.results)
 
 
-def test_batch_requests_registry_dependencies_of_requested_factors():
-    """因子依赖的 enriched 基础列必须随面板请求(如 log_float_mv 需要不复权 raw_close)。
-
-    面板少列会让该因子整列不产出(静默缺因子), 这条断言锁住注册表依赖 → 面板请求的接线。
-    """
-    engine = _Engine(_panel().with_columns((pl.col("close") / 0.8).alias("raw_close")))
-    FactorBacktestService(engine).run_batch(_batch_config(["log_float_mv"]))
-
-    requested = engine.calls[0]["columns"]
-    assert "raw_close" in requested
-    assert "turnover_rate" in requested
-
-
 def test_batch_isolates_a_single_factor_failure(monkeypatch):
     engine = _Engine(_panel())
     service = FactorBacktestService(engine)

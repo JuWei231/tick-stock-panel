@@ -220,8 +220,8 @@ _CATALOG: tuple[FactorSpec, ...] = (
     # --- 扩充批次 (2026-09-05): 规模/收益分解/长窗口/下行风险/量能潮/换手水平 ---
     _virtual(
         "log_float_mv", "流通市值对数", "规模",
-        "ln(不复权收盘价 x 当日成交量 / 换手率), 由换手率反推流通股本, 高值代表大盘",
-        deps=frozenset({"raw_close", "volume", "turnover_rate"}), scale_free=False,
+        "ln(收盘价 x 当日成交量 / 换手率), 由换手率反推流通股本, 高值代表大盘",
+        deps=frozenset({"close", "volume", "turnover_rate"}), scale_free=False,
     ),
     _virtual(
         "momentum_120d", "120日动量", "动量",

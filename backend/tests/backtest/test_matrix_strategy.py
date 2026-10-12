@@ -39,6 +39,13 @@ from app.strategy.engine import StrategyDataContext, StrategyEngine
 REPO_ROOT = Path(__file__).resolve().parents[3]
 
 
+@pytest.fixture(autouse=True)
+def _migrated_signal_definitions(monkeypatch):
+    """注入迁移自内置的信号定义 (信号列定义驱动, 不依赖运行目录)。"""
+    from tests.signal_seeds import install_pipeline_caches
+    install_pipeline_caches(monkeypatch)
+
+
 def test_common_matrix_features_match_polars_indicator_pipeline():
     rows = []
     start = date(2024, 1, 1)
@@ -96,9 +103,6 @@ def test_research_factor_catalog_matches_matrix_features():
                 "high": close + 0.35 + asset_id * 0.03,
                 "low": close - 0.3,
                 "close": close,
-                # 前复权价 x 0.8 = 不复权价: 市值/规模类因子(log_float_mv)必须用 raw_close,
-                # 夹具不带该列会让因子整列不产出(与真实 enriched 数据不符)。
-                "raw_close": close / 0.8,
                 "volume": volume,
                 "amount": volume * close,
                 "turnover_rate": 1.0 + asset_id * 0.2 + (offset % 7) * 0.05,
@@ -125,7 +129,7 @@ def test_research_factor_catalog_matches_matrix_features():
         ])
     market = build_market_data_matrix(
         panel,
-        field_columns={"amount", "turnover_rate", "consecutive_limit_ups", "raw_close"},
+        field_columns={"amount", "turnover_rate", "consecutive_limit_ups"},
     )
     market = attach_matrix_fundamental_fields(market, None, fundamental_names)
 
@@ -213,7 +217,7 @@ def test_matrix_pipeline_builds_and_reuses_one_compact_valid_bar_index():
     market = build_market_data_matrix(panel)
     base_bytes = market.nbytes
     strategy = StrategyEngine._load_file(
-        REPO_ROOT / "backend" / "app" / "strategy" / "builtin" / "ma_golden_cross.py"
+        REPO_ROOT / "backend" / "tests" / "fixtures" / "strategies" / "ma_golden_cross.py"
     ).matrix_strategy
 
     with patch.object(
@@ -285,7 +289,7 @@ def test_matrix_crossovers_skip_missing_asset_bars_like_polars_signals(
     )
     market = build_market_data_matrix(panel)
     strategy_def = StrategyEngine._load_file(
-        REPO_ROOT / "backend" / "app" / "strategy" / "builtin" / strategy_file
+        REPO_ROOT / "backend" / "tests" / "fixtures" / "strategies" / strategy_file
     )
     actual = strategy_def.matrix_strategy.compute_signals(market, params)
     time_id_by_date = {
@@ -317,16 +321,13 @@ def test_matrix_crossovers_skip_missing_asset_bars_like_polars_signals(
 
 
 def test_builtin_matrix_strategies_use_their_declared_formula_modules():
-    strategy_dir = REPO_ROOT / "backend" / "app" / "strategy" / "builtin"
-    # "_" 前缀是共享辅助模块 (如 _gsgf_risk), 引擎扫描时跳过, 不是策略本身。
+    strategy_dir = REPO_ROOT / "backend" / "tests" / "fixtures" / "strategies"
     strategy_files = sorted(
-        path
-        for path in strategy_dir.glob("*.py")
-        if path.name != "__init__.py" and not path.name.startswith("_")
+        path for path in strategy_dir.glob("*.py") if path.name != "__init__.py"
     )
 
-    # 分钟形态策略 (minute_red_streak) 已迁至自定义策略目录, 内置策略全部 matrix 后端
-    assert len(strategy_files) == 30
+    # 夹具目录 = 25 个 matrix 策略 (分钟形态策略在 strategies_minute 子目录, 研究模板在 research 目录)
+    assert len(strategy_files) == 25
     for strategy_path in strategy_files:
         strategy = StrategyEngine._load_file(strategy_path)
         assert strategy.execution_backend == "matrix_native"
@@ -730,7 +731,7 @@ def test_matrix_cache_prunes_by_bytes_and_leaves_no_staging_directory(tmp_path):
     del first
     gc.collect()
     assert second.close[0, 0] == pytest.approx(11.0)
-    assert len(list(cache_root.glob(f"v{matrix_module._DIRECT_MATRIX_LOADER_VERSION}-*"))) == 1
+    assert len(list(cache_root.glob("v4-*"))) == 1
     assert list(cache_root.glob(".*.tmp")) == []
     assert len(list(cache_root.glob(".axes-v1-*.json"))) == 1
 
@@ -783,12 +784,12 @@ def test_managed_source_generation_skips_file_walk_and_invalidates_explicitly(tm
     assert changed.cache_path != first.cache_path
     del first, repeated
     gc.collect()
-    assert len(list(cache_root.glob(f"v{matrix_module._DIRECT_MATRIX_LOADER_VERSION}-*"))) == 1
+    assert len(list(cache_root.glob("v4-*"))) == 1
 
 
 def test_registered_builtin_matrix_strategies_share_one_cache_profile():
     engine = StrategyEngine(
-        strategy_dirs=[REPO_ROOT / "backend" / "app" / "strategy" / "builtin"]
+        strategy_dirs=[REPO_ROOT / "backend" / "tests" / "fixtures" / "strategies"]
     )
     profile = build_matrix_cache_profile(engine, "stock")
     strategies = tuple(
@@ -796,7 +797,8 @@ def test_registered_builtin_matrix_strategies_share_one_cache_profile():
         if s.execution_backend != "minute_filter"
     )
 
-    assert len(strategies) == 30
+    # 25 个 matrix 策略夹具 (研究模板在 research 目录, 不在夹具目录)
+    assert len(strategies) == 25
     assert all(strategy.execution_backend == "matrix_native" for strategy in strategies)
     assert profile.warmup_bars > 0
     assert profile.forward_bars == max(int(strategy.max_hold_days or 0) for strategy in strategies)
@@ -1061,7 +1063,7 @@ def test_strategy_engine_runs_matrix_strategy_without_legacy_filter():
     history = pl.DataFrame(rows)
     target = start + timedelta(days=64)
     engine = StrategyEngine(
-        strategy_dirs=[REPO_ROOT / "backend" / "app" / "strategy" / "builtin"],
+        strategy_dirs=[REPO_ROOT / "backend" / "tests" / "fixtures" / "strategies"],
     )
     strategy = engine.get("macd_golden")
     assert strategy.filter_fn is None
@@ -1105,7 +1107,7 @@ def test_strategy_engine_run_all_builds_one_shared_matrix():
     history = pl.DataFrame(rows)
     target = start + timedelta(days=64)
     engine = StrategyEngine(
-        strategy_dirs=[REPO_ROOT / "backend" / "app" / "strategy" / "builtin"],
+        strategy_dirs=[REPO_ROOT / "backend" / "tests" / "fixtures" / "strategies"],
     )
     original = engine.get("macd_golden")
     engine._strategies["macd_copy"] = replace(

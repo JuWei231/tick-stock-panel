@@ -11,12 +11,12 @@ from app.strategy.monitor import MonitorRuleEngine
 
 
 def _df(rows: list[dict]) -> pl.DataFrame:
-    """rows 每项: symbol/_volume_delta 必填, 其余可选 (close/raw_close/amount/total_shares/float_shares)。"""
+    """rows 每项: symbol/_volume_delta 必填, 其余可选 (close/amount/total_shares/float_shares)。"""
     base = {
         "symbol": [], "close": [], "change_pct": [],
         "_volume_delta": [], "_volume_delta_amount": [], "_volume_delta_span": [],
     }
-    optional = ["amount", "raw_close", "total_shares", "float_shares"]
+    optional = ["amount", "total_shares", "float_shares"]
     for r in rows:
         base["symbol"].append(r["symbol"])
         base["close"].append(r.get("close", 10.0))
@@ -127,11 +127,10 @@ def test_volume_delta_basic_filter_market_cap():
         "market_cap_min": 20e8, "price_min": None, "price_max": None,
         "amount_min": None, "exclude_st": False,
     })])
-    # 市值口径是 raw_close × total_shares (close 是前复权价, 不用作市值价格):
-    # BIG 10×3e8=30亿 通过; SMALL 10×1e8=10亿 被滤
+    # close × total_shares: BIG 10×3e8=30亿 通过; SMALL 10×1e8=10亿 被滤
     events = eng.evaluate(_df([
-        {"symbol": "BIG.SH", "_volume_delta": 20000.0, "raw_close": 10.0, "total_shares": 3e8},
-        {"symbol": "SMALL.SH", "_volume_delta": 20000.0, "raw_close": 10.0, "total_shares": 1e8},
+        {"symbol": "BIG.SH", "_volume_delta": 20000.0, "total_shares": 3e8},
+        {"symbol": "SMALL.SH", "_volume_delta": 20000.0, "total_shares": 1e8},
     ]))
     assert [e["symbol"] for e in events] == ["BIG.SH"]
 

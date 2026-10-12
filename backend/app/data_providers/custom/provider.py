@@ -31,9 +31,12 @@ _REQUIRED = {
     "daily": {"symbol", "date", "open", "high", "low", "close", "volume", "amount"},
     "adj_factor": {"symbol", "trade_date", "ex_factor"},
     "realtime": {"symbol", "last_price", "prev_close", "open", "high", "low", "volume"},
-    "minute": {"symbol", "datetime", "open", "high", "low", "close", "volume", "amount"},
+    "minute": {"symbol", "datetime", "open", "high", "low", "close", "volume"},
     # full_minute (全量分钟) 与 minute 同形: 当日窗口批量拉取, 字段映射一致
-    "full_minute": {"symbol", "datetime", "open", "high", "low", "close", "volume", "amount"},
+    "full_minute": {"symbol", "datetime", "open", "high", "low", "close", "volume"},
+    # minute/full_minute 的 amount(成交额)按契约可空 (docs/plugin-development.md:
+    # 无法提供可靠成交额时应返回 null 不得伪造, 均价线降级显示 —), 不列为必填 —
+    # 否则缺成交额的源整个被 validate 拒绝, 保存后源从列表消失
     # financial 字段由数据源决定, 只要求能映射出 symbol
     "financial": {"symbol"},
 }
@@ -97,20 +100,10 @@ class GenericHTTPProvider:
     def __init__(self, config: CustomSourceConfig) -> None:
         self.config = config
         self.name = config.name
-        # httpx.Client() 构造本身要 ~0.7s (trust_env 默认 True 时在本机会到 ~1.6s,
-        # 含代理环境内省)。load_all() 会为每个 YAML 源构造 provider, 启动期白付这份
-        # 开销; 改为首次真正发请求时再建, 不影响任何取数路径。
-        self._client: httpx.Client | None = None
-
-    def _http_client(self) -> httpx.Client:
-        if self._client is None:
-            self._client = httpx.Client(timeout=30.0)
-        return self._client
+        self._client = httpx.Client(timeout=30.0)
 
     def close(self) -> None:
-        if self._client is not None:
-            self._client.close()
-            self._client = None
+        self._client.close()
 
     def validate(self) -> list[str]:
         errors: list[str] = []
@@ -489,7 +482,7 @@ class GenericHTTPProvider:
         else:
             request_kwargs["params"] = auth_params
             request_kwargs["json"] = body
-        resp = self._http_client().request(method, cfg.url, **request_kwargs)
+        resp = self._client.request(method, cfg.url, **request_kwargs)
         resp.raise_for_status()
         return extract_rows(resp.json(), cfg.response_path)
 

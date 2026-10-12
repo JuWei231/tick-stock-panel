@@ -15,17 +15,17 @@ from pathlib import Path
 
 from app.services.ext_data import ExtConfigStore
 from app.services.ext_presets import (
-    _presets,
+    _concept_preset,
+    _industry_preset,
     ensure_builtin_presets,
 )
 
-# 从注册表派生, 新增预设自动纳入本契约, 不需要同步维护一份 id 清单。
-_PRESET_IDS = tuple(p.id for p in _presets())
+_PRESET_IDS = ("ext_gn_ths", "ext_hy_ths")
 
 
 def test_builtin_presets_ship_disabled() -> None:
     """出厂 preset 的 pull.enabled 必须为 False, 否则启动即网络拉取 (#199)。"""
-    for preset in _presets():
+    for preset in (_concept_preset(), _industry_preset()):
         assert preset.pull is not None
         assert preset.pull.url, "禁用归禁用, 手动获取仍需 url 配方"
         assert preset.pull.enabled is False, f"{preset.id} 启动即自动拉取, 违反启动契约"

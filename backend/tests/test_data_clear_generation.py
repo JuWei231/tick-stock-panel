@@ -12,7 +12,6 @@ from app.api import data as data_api
 from app.backtest.engine import PanelCache
 from app.enriched_generation import (
     EnrichedGenerationUnavailableError,
-    _process_is_alive,
     get_enriched_generation,
 )
 
@@ -153,42 +152,6 @@ def test_clear_data_keeps_generation_publishing_after_partial_delete(
     assert marker["state"] == "publishing"
     with pytest.raises(EnrichedGenerationUnavailableError, match="being published"):
         get_enriched_generation(tmp_path, "stock")
-
-
-def test_process_is_alive_treats_wrapped_oserror_as_dead(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """os.kill 抛 SystemError 包装的 OSError(winerror=87) 时必须判为"已死"。
-
-    真实故障场景: data/.matrix_generation_stock.json 残留 publishing 标记,
-    owner_pid 指向已退出进程, 启动时 get_matrix_data_generation 探测存活 →
-    Python on Windows 把 os.kill 的 OSError(87) 包装成 SystemError, 原 `except OSError`
-    不执行 → 未捕获异常导致应用启动直接失败。修复后应走孤儿恢复。
-    """
-    inner = OSError(22, "invalid argument")
-    inner.winerror = 87
-    wrapped = SystemError("<class 'OSError'> returned a result with an exception set")
-    wrapped.__context__ = inner
-
-    def _raise(_pid, _sig):
-        raise wrapped
-
-    monkeypatch.setattr("app.enriched_generation.os.kill", _raise)
-    assert _process_is_alive(4242) is False
-
-
-def test_process_is_alive_keeps_true_for_unrelated_errors(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """与 pid 无关的 OSError(如权限不足)仍按存活处理, 保持 fail-closed。"""
-    denied = OSError(13, "permission denied")
-    denied.winerror = 5
-
-    def _raise(_pid, _sig):
-        raise denied
-
-    monkeypatch.setattr("app.enriched_generation.os.kill", _raise)
-    assert _process_is_alive(4242) is True
 
 
 def test_clear_data_recovers_stale_publishing_marker_from_dead_process(

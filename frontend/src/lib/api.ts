@@ -247,7 +247,7 @@ export interface AiStockReport {
 // ===== Kline =====
 export interface MinuteKlineRow {
   datetime: string
-  /** 分钟开盘价; 部分数据源(stock-sdk 历史日)无真实分钟 open, 为 null */
+  /** 分钟开盘价; 部分数据源历史日无真实分钟 open, 为 null */
   open: number | null
   high: number
   low: number
@@ -280,14 +280,6 @@ export interface KlineRow {
   close: number
   volume?: number
   change_pct?: number
-  /** 不复权原始收盘价 (市值等口径必须用它) */
-  raw_close?: number | null
-  /** 换手率百分数 (按当日流通股本计算) */
-  turnover_rate?: number | null
-  /** 总市值(元) = 不复权价 x 当日总股本 (后端按公告日口径算好) */
-  market_cap?: number | null
-  /** 流通市值(元) */
-  float_market_cap?: number | null
   ma5?: number | null
   ma20?: number | null
   ma60?: number | null
@@ -442,6 +434,8 @@ export interface ScreenerRunAllSummary {
   error?: string | null
   /** 本次执行起点 (Unix ms, 后端时钟), 用于判断缓存结果是否属于本轮 */
   started_at?: number | null
+  /** 已跳过的失效策略 ID (策略池残留, 前端应从池中移除) */
+  skipped_unknown?: string[]
 }
 
 export interface ScreenerCachedResult {
@@ -787,7 +781,7 @@ export interface StrategyDetail {
   name: string
   description: string
   tags: string[]
-  source: 'builtin' | 'custom' | 'ai' | 'composite'
+  source: 'custom' | 'ai' | 'composite'
   research_only?: boolean
   execution_backend: 'polars_expr' | 'matrix_native' | 'python_history_legacy' | 'composite' | 'minute_filter'
   asset_types: string[]
@@ -800,6 +794,8 @@ export interface StrategyDetail {
   scoring_directions: Record<string, ScoringDirection>
   entry_signals: string[]
   exit_signals: string[]
+  // 叠加条件 (每策略 overlay 硬过滤); 无覆盖时空数组
+  overlay_filter?: CustomSignalCondition[]
   minute_exit_trigger_supported_signals: string[]
   stop_loss: number | null
   take_profit: number | null
@@ -869,6 +865,10 @@ export interface CustomSignal {
   kind: 'entry' | 'exit' | 'both'
   conditions: CustomSignalCondition[]
   enabled: boolean
+  timeframe?: 'daily' | 'intraday'
+  min_bars?: number
+  /** 显式输出列名 (缺省 csg_{id}); 迁移自内置的定义沿用 signal_* 原列名, 编辑保存须原样回传 */
+  column?: string
 }
 
 export interface CustomSignalFieldGroup {
@@ -2842,10 +2842,14 @@ export const api = {
 
   // timeframe='all' 时不传参数 → 后端不过滤周期, 返回日线+分钟合并列表
   screenerStrategies: async (assetType?: 'stock' | 'etf' | 'index', timeframe: '1d' | '1m' | 'all' = '1d') => {
-    const data = await request<{ strategies: StrategyDetail[]; load_errors?: StrategyLoadError[] }>(
+    const data = await request<{
+      strategies: StrategyDetail[]
+      load_errors?: StrategyLoadError[]
+      legacy_migration?: { seeded_signals?: number; archived_files?: string[] }
+    }>(
       `/api/strategies?${assetType ? `asset_type=${assetType}&` : ''}${timeframe !== 'all' ? `timeframe=${timeframe}` : ''}`,
     )
-    return { presets: data.strategies, load_errors: data.load_errors }
+    return { presets: data.strategies, load_errors: data.load_errors, legacy_migration: data.legacy_migration }
   },
   screenerRunPreset: (strategy_id: string, pool?: string[], asOf?: string, extColumns?: string, assetType: 'stock' | 'etf' = 'stock', timeframe: '1d' | '1m' = '1d') =>
     request<ScreenerResult>('/api/screener/run_preset', {
@@ -4067,14 +4071,6 @@ export const api = {
       timeoutMs: null,
       body: JSON.stringify(payload),
     }),
-
-  /** a-stock-data 集成 (astock 扩展页) — 信封 {state, items, ...}, 见 docs/astock-integration.md */
-  astockReports: (symbol: string) =>
-    request<AstockEnvelope>(`/api/astock/research/reports/${encodeURIComponent(symbol)}`),
-  astockMargin: (symbol: string, limit = 100) =>
-    request<AstockEnvelope>(`/api/astock/margin/${encodeURIComponent(symbol)}?limit=${limit}`),
-  astockTelegraph: (limit = 50) =>
-    request<AstockEnvelope>(`/api/astock/news/telegraph?limit=${limit}`),
 }
 
 // ===== Pipeline =====
@@ -4343,21 +4339,4 @@ export interface AnalysisMenu {
   created_at?: string | null
   updated_at?: string | null
   builtin?: boolean
-}
-
-// ===== a-stock-data 集成 (astock 扩展页) =====
-export interface AstockItem {
-  [key: string]: unknown
-}
-
-export interface AstockEnvelope {
-  state: 'ok' | 'error'
-  dataset?: string
-  symbol?: string
-  code?: string
-  date?: string
-  fetched_at?: string
-  message?: string
-  count: number
-  items: AstockItem[]
 }

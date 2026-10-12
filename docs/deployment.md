@@ -16,7 +16,7 @@ docker run -d --name tsp -p 3018:3018 -v ${PWD}/data:/app/data ghcr.io/shy3130/t
 ```
 
 - 需要配置时:从 `.env.example` 复制出 `.env`,命令里加 `--env-file .env`。
-- 镜像默认**不含** stock-sdk 插件(合规考虑),也不含 `legacy-cpu` / `backtest` extras —— 老 CPU(无 AVX2)或需要 vectorbt 回测时,请用方式 B 通过 `BACKEND_EXTRAS` 自构建。
+- 镜像默认不含 `legacy-cpu` / `backtest` extras —— 老 CPU(无 AVX2)或需要 vectorbt 回测时,请用方式 B 通过 `BACKEND_EXTRAS` 自构建。
 - 跑自己改过的代码:fork 后到仓库 Actions 页启用 workflow(fork 默认禁用),构建出的 `ghcr.io/<你的用户名>/tick-stock-panel` 用法相同。
 - 想要 compose 全套挂载(`.env` / `tiers.yaml` / 数据卷):参考根目录 `docker-compose.yml`,把 `build:` 段换成 `image: ghcr.io/shy3130/tick-stock-panel:latest`。
 
@@ -40,19 +40,6 @@ docker compose up --build
 ```
 
 Docker 采用两阶段构建,前端 dist 拷进后端镜像,**单容器**运行,数据完全在自己手里。
-
-> ⚠️ **stock-sdk 插件默认不打包(合规考虑)**
->
-> stock-sdk 数据源本质是抓取第三方财经网站(如东方财富)的行情接口,未经对方授权,可能违反其服务条款并涉及交易所行情版权问题。**出于合规考虑,Docker 默认构建不再内置 stock-sdk 插件依赖**。
->
-> - **默认行为**:`docker compose up --build` 构建出的镜像**不含** stock-sdk,插件不可用。
-> - **如确需启用**(自行承担合规责任):
->   ```bash
->   docker compose build --build-arg INCLUDE_STOCKSDK=1
->   docker compose up -d
->   ```
-> - 启用后镜像会额外内置 Node.js 运行时并预装 stock-sdk 依赖,插件开箱即用。
-> - **建议优先使用 TickFlow 等正规授权数据源。**
 
 更新到新版本:
 
@@ -131,7 +118,7 @@ git pull
 
 > 用方式 A 镜像直跑(无本地仓库)的用户:`docker pull ghcr.io/shy3130/tick-stock-panel:latest` 后删除旧容器重跑;compose 换 `image:` 的用户执行 `docker compose pull && docker compose up -d`。
 
-**整个 `data/` 目录都不纳入 git** —— 行情 K线、财务、自选、回测、监控记录,乃至概念/行业/人气排行/资金流向扩展数据,全部是程序运行时生成/拉取的用户数据,`git pull` 物理上无法影响它们。新用户首次启动时只会**创建**这几份内置扩展表的配置(不拉取数据,见 #199),需要在对应页面点「获取数据」或到「数据」页手动拉取一次。
+**整个 `data/` 目录都不纳入 git** —— 行情 K线、财务、自选、回测、监控记录,乃至概念/行业扩展数据,全部是程序运行时生成/拉取的用户数据,`git pull` 物理上无法影响它们。新用户首次启动时,概念/行业两份扩展数据会自动从远程接口拉取,无需任何手动操作。
 
 > ⚠️ **切勿使用以下命令"解决冲突"或"清理",它们会一次性删光 `data/` 下所有未被 git 跟踪的数据:**
 > - `git clean -fdx`(最危险,会删掉所有 `.gitignore` 忽略的文件)

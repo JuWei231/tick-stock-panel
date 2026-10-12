@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import logging
 import sys
-import time
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -19,8 +18,8 @@ from app.api import (
     analysis,
     backtest,
     data,
-    ext_data,
     events,
+    ext_data,
     factors,
     financials,
     indices,
@@ -95,14 +94,6 @@ async def _application_lifespan(app: FastAPI):
         "Tick Stock Panel v%s starting (mode=%s)",
         __version__, tf_client.current_mode(),
     )
-    # 启动阶段计时: 这段链路整体可达分钟级 (冷页缓存/杀软扫描下的全量 parquet I/O),
-    # 但原先只有各步骤自己的零散日志, 慢的时候无法定位到具体阶段。结束时汇总一行,
-    # 让"启动慢"能直接读出瓶颈阶段。
-    _boot_started = time.perf_counter()
-    _boot_steps: list[tuple[str, float]] = []
-
-    def _boot_step(name: str, started: float) -> None:
-        _boot_steps.append((name, time.perf_counter() - started))
 
     # 首次启动: 若配置了 AUTH_PASSWORD 环境变量且未设过密码, 用它初始化。
     # 公网部署免 SSH 端口转发; 已设过密码则不覆盖 (改密码走 UI)。
@@ -113,10 +104,8 @@ async def _application_lifespan(app: FastAPI):
         logger.warning("auth bootstrap failed: %s", e)
 
     # 数据层
-    _step_started = time.perf_counter()
     store = DataStore()
     repo = KlineRepository(store)
-    _boot_step("datastore", _step_started)
     app.state.datastore = store
     app.state.repo = repo
     # 自定义/复合因子载入注册表 (P3); 单个失败只跳过该因子 (fail-隔离)
@@ -147,26 +136,20 @@ async def _application_lifespan(app: FastAPI):
 
     # Polars 缓存预热 — enriched 的重计算 (107万行 compute_indicators) 推后台,
     # instruments/index/ETF 仍同步 (毫秒级)。应用立即 ready, 指标算完后自动替换。
-    _step_started = time.perf_counter()
     repo.refresh_cache(background=True)
-    _boot_step("refresh_cache", _step_started)
 
     # 自定义数据源配置(可选): 失败只记录错误, 不影响 TickFlow 基准路径。
-    _step_started = time.perf_counter()
     try:
         from app.data_providers import custom as custom_sources
         custom_sources.load_all()
         logger.info("custom data sources loaded: %d", len(custom_sources.list_sources()))
     except Exception as e:  # noqa: BLE001
         logger.warning("custom data sources init failed: %s", e)
-    _boot_step("custom_sources", _step_started)
 
     # 自定义源必须先注册,能力探测才能补充其数据集能力。
     capset = detect_capabilities()
     app.state.capabilities = capset
-    # 注: 此处还不是"可服务"状态 —— lifespan 要跑完全部初始化才 yield, uvicorn 之后
-    # 才开始处理请求。可服务信号在下面的 "ready: 开始接受请求"。
-    logger.info("capabilities ready; %d active (还在完成启动)", len(capset.all()))
+    logger.info("ready; %d capabilities active", len(capset.all()))
 
     # 全局行情服务
     qs = QuoteService()
@@ -240,7 +223,6 @@ async def _application_lifespan(app: FastAPI):
     # 内置扩展表 (概念/行业): 先创建 config (含拉取配置), 默认开启定时拉取。
     # 必须在 pull_scheduler.refresh() 之前执行, 否则全新部署时 scheduler 读不到
     # 刚创建的预设, 定时任务不会启动。
-    _step_started = time.perf_counter()
     try:
         from app.services.ext_presets import ensure_builtin_presets
         await ensure_builtin_presets(store.data_dir)
@@ -258,23 +240,21 @@ async def _application_lifespan(app: FastAPI):
     from app.services.financial_sync import financial_scheduler
     financial_scheduler.start(store.data_dir, capset)
     app.state.financial_scheduler = financial_scheduler
-    _boot_step("schedulers", _step_started)
 
     # 自愈看门狗: 探测 polars 闸与写锁, 僵死时退出交由 supervisor 拉起 (兜底层)。
     from app.watchdog import start_watchdog
     app.state.watchdog = start_watchdog(app.state, repo)
 
     # 策略引擎
-    _step_started = time.perf_counter()
-    from app.strategy.engine import StrategyEngine
-    from app.strategy import config as strategy_config
-    from app.strategy.monitor import StrategyMonitorService
     from app.services.screener import ScreenerService
+    from app.strategy import config as strategy_config
+    from app.strategy.engine import StrategyEngine
+    from app.strategy.monitor import StrategyMonitorService
 
     _screener_svc = ScreenerService(repo)
     _etf_screener_svc = ScreenerService(repo, asset_type="etf")
     strategy_dirs = [
-        Path(__file__).resolve().parent / "strategy" / "builtin",
+        Path(__file__).resolve().parent / "strategy" / "research",
         store.data_dir / "strategies" / "custom",
         store.data_dir / "strategies" / "ai",
         store.data_dir / "strategies" / "composite",
@@ -283,8 +263,28 @@ async def _application_lifespan(app: FastAPI):
         strategy_dirs=strategy_dirs,
         override_loader=lambda sid: strategy_config.load_override(store.data_dir, sid),
     )
+    # 去内置化一次性迁移: ①信号目录为空时种入 20 个默认定义;
+    # ②内置残留类加载失败 (composite 断链 / import 已删模块) 的策略文件
+    #   自动归档出扫描目录并重载。摘要挂到 app.state 供前端提示一次。
+    legacy_migration: dict = {}
+    try:
+        from app.strategy import custom_signals as _cs
+        from app.strategy.legacy_migrate import archive_unloadable_strategies
+
+        seeded = _cs.seed_if_empty(store.data_dir)
+        if seeded:
+            legacy_migration["seeded_signals"] = seeded
+            logger.info("legacy migrate: seeded %d default signals", seeded)
+        archived = archive_unloadable_strategies(strategy_engine.load_errors())
+        if archived:
+            strategy_engine.reload()
+            legacy_migration["archived_files"] = archived
+            logger.info("legacy migrate: archived %d unloadable files", len(archived))
+        if legacy_migration:
+            app.state.legacy_migration = legacy_migration
+    except Exception as e:  # noqa: BLE001
+        logger.warning("legacy migrate failed (ignored): %s", e)
     app.state.strategy_engine = strategy_engine
-    _boot_step("strategy_engine", _step_started)
     logger.info("strategy engine loaded: %d strategies", len(strategy_engine.list_strategies()))
 
     matrix_prewarm_owner = MatrixCachePrewarmOwner()
@@ -337,17 +337,17 @@ async def _application_lifespan(app: FastAPI):
         _schedule_matrix_cache_prewarm()
 
     # 通用监控规则引擎: 启动时 reload 规则到内存态 (修复重启后告警失效)
-    from app.strategy.monitor import MonitorRuleEngine
-    from app.strategy import monitor_rules as mr_store
     from app.services import preferences
     from app.services.sector_monitor import SectorMonitorService
+    from app.strategy import monitor_rules as mr_store
+    from app.strategy.monitor import MonitorRuleEngine
     monitor_engine = MonitorRuleEngine()
     sector_monitor_service = SectorMonitorService(repo)
     monitor_engine.set_strategy_engine(strategy_engine)
     monitor_engine.set_data_dir(store.data_dir)
     monitor_engine.set_sector_monitor_service(sector_monitor_service)
     # 复用 ScreenerService 的历史窗口加载器 (三级缓存, 启动预计算命中 ~0ms),
-    # 让声明 filter_history 的策略 (如反包) 也能在实时监控里跑选股 → 盘中触发通知。
+    # 让声明 filter_history 的策略 (如反包) 也能在实时监控里跑策略 → 盘中触发通知。
     monitor_engine.set_history_loader(_screener_svc._load_enriched_history)
     # ETF 版历史加载器: asset_type=etf 的 strategy 型规则用 (读 kline_etf_enriched)。
     monitor_engine.set_history_loader_etf(_etf_screener_svc._load_enriched_history)
@@ -374,18 +374,9 @@ async def _application_lifespan(app: FastAPI):
 
     # 源码内二次开发启动钩子: 仅暴露稳定只读上下文, 单个扩展失败不影响核心启动。
     extension_registry = app.state.extension_registry
-    _step_started = time.perf_counter()
     start_backend_extensions(
         current_extension_context(data_dir=store.data_dir, repository=repo),
         extension_registry,
-    )
-    _boot_step("extensions", _step_started)
-
-    _boot_total = time.perf_counter() - _boot_started
-    _boot_detail = ", ".join(f"{name}={elapsed:.2f}s" for name, elapsed in _boot_steps)
-    logger.info(
-        "ready: 开始接受请求 (启动耗时 %.2fs; %s)",
-        _boot_total, _boot_detail,
     )
 
     try:
@@ -441,7 +432,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Tick Stock Panel",
     version=__version__,
-    description="A 股选股 + 回测面板 — TickFlow 适配",
+    description="A 股策略 + 回测面板 — TickFlow 适配",
     lifespan=lifespan,
 )
 
@@ -497,6 +488,13 @@ async def auth_middleware(request: Request, call_next):
     authz = request.headers.get("authorization", "")
     if authz.startswith("Bearer "):
         from app.services import api_gateway
+        # 网络门禁先行: 默认仅本机/内网可调 Token 通道 (API_TOKEN_LOCAL_ONLY=0 放开);
+        # 先于 evaluate 拦截 → 不消耗限流额度, 公网探测者也拿不到 Token 有效性信号
+        gate = api_gateway.token_network_verdict(auth_api._client_ip(request))
+        if gate is not None:
+            return JSONResponse(
+                status_code=gate["status"], content={"detail": gate["detail"]},
+            )
         verdict = api_gateway.evaluate(
             settings.data_dir, request.method, path, authz[len("Bearer "):].strip(),
         )
@@ -576,6 +574,7 @@ app.state.extension_load_errors = extension_load_errors
 # 若不注册 handler 会冒泡成 500 Internal Server Error,对前端不友好且语义错误。
 from fastapi import Request
 from fastapi.responses import JSONResponse
+
 from app.tickflow.capabilities import CapabilityDenied
 
 

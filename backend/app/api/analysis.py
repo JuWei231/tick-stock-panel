@@ -11,8 +11,6 @@ from pydantic import BaseModel, Field
 
 from app.services.fs_utils import atomic_write_text
 
-from app.services.ext_presets import MONEY_FLOW_PRESET_ID, POPULARITY_PRESET_ID
-
 router = APIRouter(prefix="/api/analysis-menus", tags=["analysis-menus"])
 
 
@@ -114,75 +112,14 @@ def _save(request: Request, menu: AnalysisMenu) -> AnalysisMenu:
     return menu
 
 
-def _ranking_menu(
-    menu_id: str,
-    label: str,
-    data_source: str,
-    rank_field: str,
-    detail_columns: list[AnalysisColumn],
-    order: int,
-) -> AnalysisMenu:
-    """内置榜单菜单: template=ranking 走扁平明细表, 不做分组。"""
-    return AnalysisMenu(
-        id=menu_id,
-        label=label,
-        icon="chart",
-        data_source=data_source,
-        template="ranking",
-        rank_field=rank_field,
-        group_columns=[],
-        detail_columns=detail_columns,
-        default_sort=DefaultSort(field=rank_field, order="asc"),
-        visible=True,
-        order=order,
-        builtin=True,
-    )
-
-
 def _default_menus(request: Request) -> list[AnalysisMenu]:
-    """自动生成的默认分析菜单 —— 内置榜单菜单 (不再扫描扩展数据配置)。
+    """自动生成的默认分析菜单。
 
-    历史上会扫描扩展数据配置, 对含「概念」字段的表自动生成一个「概念分析」菜单。
-    该自动生成已关闭: 内置的概念分析页(/concept-analysis)已覆盖该场景, 自动菜单会造成
-    导航重复。需要时用户可在「设置 → 扩展页面」手动创建。
-
-    现在只返回「内置预设 ↔ 内置榜单」的固定配对 —— 人气排行和资金流向没有对应的
-    内置页面, 因此由本函数直接声明菜单, 不写用户数据(不可误删、随代码升级), 也不与
-    任何内置页面重复。用户若要用同 id 覆盖, 创建一个同名 saved 菜单即可 (list_menus
-    以 saved 优先)。
+    历史上会扫描扩展数据配置,对含「概念」字段的表自动生成一个「概念分析」菜单。
+    现已关闭自动生成 —— 内置的概念分析页(/concept-analysis)已覆盖该场景,
+    自动菜单会造成导航重复。需要时用户可在「设置 → 扩展页面」手动创建。
     """
-    return [
-        _ranking_menu(
-            "hot_rank",
-            "人气排行",
-            POPULARITY_PRESET_ID,
-            "人气排名",
-            [
-                AnalysisColumn(field="人气排名", label="排名", type="number", precision=0, sortable=True),
-                AnalysisColumn(field="股票简称", label="名称", type="string"),
-                AnalysisColumn(field="股票代码", label="代码", type="string"),
-                AnalysisColumn(field="热度", label="热度", type="number", precision=1, sortable=True),
-                AnalysisColumn(field="涨跌幅", label="涨跌幅", type="percent", precision=2, sortable=True),
-            ],
-            order=300,
-        ),
-        _ranking_menu(
-            "money_flow",
-            "资金流向",
-            MONEY_FLOW_PRESET_ID,
-            "资金排名",
-            [
-                AnalysisColumn(field="资金排名", label="排名", type="number", precision=0, sortable=True),
-                AnalysisColumn(field="股票简称", label="名称", type="string"),
-                AnalysisColumn(field="股票代码", label="代码", type="string"),
-                AnalysisColumn(field="净流入", label="净流入(元)", type="amount", precision=2, sortable=True),
-                AnalysisColumn(field="流入", label="流入(元)", type="amount", precision=2),
-                AnalysisColumn(field="流出", label="流出(元)", type="amount", precision=2),
-                AnalysisColumn(field="涨跌幅", label="涨跌幅", type="percent", precision=2, sortable=True),
-            ],
-            order=310,
-        ),
-    ]
+    return []
 
 
 @router.get("")
