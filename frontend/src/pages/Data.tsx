@@ -597,13 +597,12 @@ export function Data() {
         subtitle="本地数据画像 · 同步状态 · 历史记录"
         right={
           <div className="flex items-center gap-3">
-            {!hasData && !isLoading && (
-              <span className="text-xs text-accent animate-pulse">首次使用请点击右侧按钮同步数据</span>
-            )}
             <button
               onClick={() => adjGate.guard(() => startSync.mutate())}
               disabled={isStarting}
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-gradient-to-r from-accent/25 to-accent/10 border border-accent/30 text-accent text-xs font-medium hover:from-accent/35 hover:to-accent/20 disabled:opacity-40 transition-all duration-150"
+              className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-gradient-to-r from-accent/25 to-accent/10 border border-accent/30 text-accent text-xs font-medium hover:from-accent/35 hover:to-accent/20 disabled:opacity-40 transition-all duration-150 ${
+                !hasData && !isLoading && !isStarting && !isRunning ? 'animate-breath-sync' : ''
+              }`}
             >
               {(isStarting || isRunning) ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />

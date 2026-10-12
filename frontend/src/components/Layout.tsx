@@ -151,12 +151,15 @@ function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; i
           <NavLink
             key={item.symbol}
             to={`/indices?symbol=${encodeURIComponent(item.symbol)}`}
-            className="block rounded bg-elevated/60 px-2 py-1.5 transition-colors hover:bg-elevated"
+            className="block rounded bg-elevated/60 px-1.5 py-1.5 transition-colors hover:bg-elevated"
             title={`${item.name} ${item.symbol}`}
           >
+            {/* 名称不换行 + 涨跌幅不压缩: 两列布局下单卡内容区仅 85px,
+                「上证指数」41px + 涨跌幅 36px 已接近占满, 任其收缩或换行会把
+                指数名折成两行 (曾出现「上证指/数」)。px-1.5 是为此留出的余量。 */}
             <div className="flex items-center justify-between gap-1">
-              <span className="text-[10px] text-secondary">{item.name}</span>
-              <span className={`text-[10px] font-mono ${indexPctClass(pct)}`}>{fmtIndexPct(pct)}</span>
+              <span className="min-w-0 truncate text-[10px] text-secondary">{item.name}</span>
+              <span className={`shrink-0 text-[10px] font-mono ${indexPctClass(pct)}`}>{fmtIndexPct(pct)}</span>
             </div>
             <div className={`mt-0.5 truncate font-mono text-[10px] ${indexPctClass(pct)}`}>
               {fmtIndexValue(value)}

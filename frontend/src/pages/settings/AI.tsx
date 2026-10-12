@@ -474,66 +474,56 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
   return (
     <div className="max-w-3xl">
       <AnchorWrap highlight={highlight} anchor="ai-connection">
-      <section className="overflow-hidden rounded-card border border-border bg-surface">
-        {/* 顶栏: 标题 + 请求协议 */}
-        <div className="flex items-center gap-3 border-b border-border/40 px-5 py-3.5">
-          <h2 className="text-sm font-semibold text-foreground">AI 服务</h2>
-          {!isCodexProvider && (
-            <div className="ml-auto flex items-center rounded-full border border-border/40 bg-base/50 p-0.5"
-              title="Chat Completions 兼容面最广; Responses 为 OpenAI 官方新协议, 仅官方及少数网关支持。不确定就保持默认。">
-              {(['chat_completions', 'responses'] as const).map(p => (
-                <button key={p} type="button" onClick={() => setProtocol(p)}
-                  className={`rounded-full px-2.5 py-1 font-mono text-[10px] leading-none transition-colors ${
-                    protocol === p ? 'bg-accent/15 text-accent' : 'text-muted hover:text-secondary'
-                  }`}>
-                  {p === 'chat_completions' ? 'Chat Completions' : 'Responses'}
-                </button>
-              ))}
-            </div>
-          )}
-          {isCodexProvider && (
-            <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] text-muted" title="Use local Codex CLI via codex exec">
-              <span className="rounded-full border border-border/40 bg-base/50 px-1.5 py-px font-mono">codex exec</span>
-              CLI
+      {/* 拆成多张卡 (与 数据源 页同构): 原先 7 个区块挤在一张卡里, 只靠细分割线
+          区分, 视觉上是一堵「行墙」, 且各区块留白不一致。 */}
+      <div className="space-y-4">
+      {/* 面板页眉 (非卡片): 标题 / 当前状态 / 连接测试。
+          这三者是在描述「当前配置处于什么状态」, 不是可编辑的配置项 ——
+          套卡片会得到一个只有标题和一行字的空框, 且把本该属于「接口配置」
+          的请求方式开关顶到了页面最上方。 */}
+      <div className="flex items-start gap-4">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2.5">
+            <Sparkles className="h-4 w-4 shrink-0 text-secondary" />
+            <h2 className="text-sm font-medium text-foreground">AI 服务</h2>
+          </div>
+          <div className="mt-2 flex items-center gap-2">
+            <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${configured ? 'bg-bear' : 'bg-warning'}`} />
+            <span className="min-w-0 truncate text-xs text-secondary">
+              <span className="font-medium text-foreground">{configured ? '已配置' : '未配置'}</span>
+              {' · '}
+              {configured ? (
+                savedCodexProvider
+                  ? <><span className="font-mono">{s?.ai_codex_command ?? CODEX_COMMAND}</span> · <span className="font-mono">{codexModelLabel(s?.ai_model, s?.ai_codex_reasoning_effort)}</span></>
+                  : <><span className="font-mono">{s?.ai_model}</span><span className="text-muted"> · {s?.ai_api_key_masked}</span></>
+              ) : (
+                <span className="text-muted">{isCodexProvider ? '使用本机 codex exec, 无需填写 Key' : '填写下方参数并保存即可启用'}</span>
+              )}
             </span>
-          )}
-        </div>
-
-        {/* 状态条 */}
-        <div className="flex items-center gap-2 border-b border-border/40 px-5 py-2.5">
-          <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${configured ? 'bg-bear' : 'bg-warning'}`} />
-          <span className="min-w-0 truncate text-xs text-secondary">
-            <span className="font-medium text-foreground">{configured ? '已配置' : '未配置'}</span>
-            {' · '}
-            {configured ? (
-              savedCodexProvider
-                ? <><span className="font-mono">{s?.ai_codex_command ?? CODEX_COMMAND}</span> · <span className="font-mono">{codexModelLabel(s?.ai_model, s?.ai_codex_reasoning_effort)}</span></>
-                : <><span className="font-mono">{s?.ai_model}</span><span className="text-muted"> · {s?.ai_api_key_masked}</span></>
-            ) : (
-              <span className="text-muted">{isCodexProvider ? '使用本机 codex exec, 无需填写 Key' : '填写下方参数并保存即可启用'}</span>
-            )}
-          </span>
-          <div className="ml-auto flex shrink-0 items-center gap-2">
-            {testResult && (
-              <span title="测试只验证当前表单, 不会保存配置; 通过后请点「保存配置」生效"
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] ${testResult.ok ? 'border-bear/25 bg-bear/[0.06] text-bear' : 'border-danger/25 bg-danger/[0.06] text-danger'}`}>
-                <span className={`h-1 w-1 rounded-full ${testResult.ok ? 'bg-bear' : 'bg-danger'}`} />
-                {testResult.msg}
-              </span>
-            )}
-            {(configured || canTest) && (
-              <button onClick={handleTest} disabled={testing}
-                title="测试当前表单的连接, 不保存配置"
-                className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs text-secondary transition-colors hover:bg-elevated hover:text-foreground disabled:opacity-50">
-                {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wifi className="h-3 w-3" />}
-                {testing ? '测试中' : '测试'}
-              </button>
-            )}
           </div>
         </div>
+        <div className="flex shrink-0 items-center gap-2 pt-0.5">
+          {testResult && (
+            <span title="测试只验证当前表单, 不会保存配置; 通过后请点「保存配置」生效"
+              className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] ${testResult.ok ? 'border-bear/25 bg-bear/[0.06] text-bear' : 'border-danger/25 bg-danger/[0.06] text-danger'}`}>
+              <span className={`h-1 w-1 rounded-full ${testResult.ok ? 'bg-bear' : 'bg-danger'}`} />
+              {testResult.msg}
+            </span>
+          )}
+          {(configured || canTest) && (
+            <button onClick={handleTest} disabled={testing}
+              title="测试当前表单的连接, 不保存配置"
+              className="inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1 text-xs text-secondary transition-colors hover:bg-elevated hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98] disabled:opacity-50">
+              {testing ? <Loader2 className="h-3 w-3 animate-spin" /> : <Wifi className="h-3 w-3" />}
+              {testing ? '测试中' : '测试'}
+            </button>
+          )}
+        </div>
+      </div>
 
+      <section className="overflow-hidden rounded-card border border-border bg-surface">
         {/* 服务商 */}
-        <div className="border-b border-border/40 px-5 py-4">
+        <div className="px-5 py-4">
           <SectionHeader label="服务商" />
           <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             {PRESETS.map(p => {
@@ -541,12 +531,19 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
               const Icon = p.icon
               return (
                 <button key={p.label} type="button" onClick={() => handlePreset(p)} aria-pressed={active}
-                  className={`group flex flex-col gap-1.5 rounded-lg border p-2.5 text-left transition-all duration-150 ${
-                    active ? 'border-accent/50 bg-accent/[0.07]' : 'border-border/60 bg-base/40 hover:border-accent/30 hover:bg-base'
+                  className={`group relative flex flex-col gap-1.5 rounded-lg border p-2.5 text-left transition-all duration-150 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98] ${
+                    active
+                      ? 'border-accent/60 bg-accent/[0.09] shadow-[0_0_0_1px_rgba(59,130,246,0.12),0_0_12px_-3px_rgba(59,130,246,0.45)]'
+                      : 'border-border/60 bg-base/40 hover:border-accent/30 hover:bg-base'
                   }`}>
+                  {/* 选中标记: 8 张卡同构时仅靠描边难以辨认, 左上角给一道主色竖标 */}
+                  <span aria-hidden="true"
+                    className={`absolute left-0 top-1/2 h-5 w-[2px] -translate-y-1/2 rounded-r-full bg-accent transition-opacity duration-150 ${
+                      active ? 'opacity-100' : 'opacity-0'
+                    }`} />
                   <span className="flex items-center gap-2">
                     <span className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-md transition-colors ${
-                      active ? 'bg-accent/15 text-accent' : 'bg-elevated/60 text-muted group-hover:text-secondary'
+                      active ? 'bg-accent/20 text-accent' : 'bg-elevated/60 text-muted group-hover:text-secondary'
                     }`}>
                       <Icon className="h-3.5 w-3.5" />
                     </span>
@@ -571,10 +568,34 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
             </div>
           )}
         </div>
+      </section>
 
+      <section className="overflow-hidden rounded-card border border-border bg-surface">
         {/* 接口配置 */}
-        <div className="border-b border-border/40 px-5 py-4">
-          <SectionHeader label={isCodexProvider ? '本地 CLI 配置' : '接口配置'} />
+        <div className="px-5 py-4">
+          {/* 标题行: 左侧区段名, 右侧请求方式 (属于本区段内可编辑项, 与下方表单同组) */}
+          <div className="mb-3 flex items-center gap-3">
+            <SectionHeader label={isCodexProvider ? '本地 CLI 配置' : '接口配置'} inline />
+            {!isCodexProvider && (
+              <div className="ml-auto flex items-center rounded-full border border-border/40 bg-base/50 p-0.5"
+                title="Chat Completions 兼容面最广; Responses 为 OpenAI 官方新协议, 仅官方及少数网关支持。不确定就保持默认。">
+                {(['chat_completions', 'responses'] as const).map(p => (
+                  <button key={p} type="button" onClick={() => setProtocol(p)} aria-pressed={protocol === p}
+                    className={`rounded-full px-2.5 py-1 font-mono text-[10px] leading-none transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 ${
+                      protocol === p ? 'bg-accent/15 text-accent' : 'text-muted hover:text-secondary'
+                    }`}>
+                    {p === 'chat_completions' ? 'Chat Completions' : 'Responses'}
+                  </button>
+                ))}
+              </div>
+            )}
+            {isCodexProvider && (
+              <span className="ml-auto inline-flex items-center gap-1.5 text-[10px] text-muted" title="Use local Codex CLI via codex exec">
+                <span className="rounded-full border border-border/40 bg-base/50 px-1.5 py-px font-mono">codex exec</span>
+                CLI
+              </span>
+            )}
+          </div>
           <div className="space-y-4">
           {isCodexProvider ? (
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
@@ -680,8 +701,6 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
                 </div>
               </Field>
 
-              <div className="border-t border-border/20" />
-
               <div className="flex items-center gap-2 border-t border-border/30 pt-3.5">
                 <span className="text-xs font-medium text-secondary">自定义 User-Agent</span>
                 <span className="text-[10px] text-muted">绕过 CDN/WAF 的 Bot 拦截</span>
@@ -690,7 +709,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
               {customUa && (
                 <div className="flex gap-2">
                   <input type="text" value={userAgent} onChange={e => setUserAgent(e.target.value)} placeholder="粘贴浏览器 User-Agent" className={`${INPUT_CLS} flex-1`} />
-                  <button type="button" onClick={genRandomUa} title="随机生成浏览器 User-Agent" className="h-9 px-2.5 rounded-lg border border-border/50 text-xs text-secondary hover:text-accent hover:border-accent/30 transition-all flex items-center gap-1.5 shrink-0">
+                  <button type="button" onClick={genRandomUa} title="随机生成浏览器 User-Agent" className="h-9 px-2.5 rounded-lg border border-border/50 text-xs text-secondary hover:text-accent hover:border-accent/30 transition-all flex items-center gap-1.5 shrink-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 active:scale-[0.98]">
                     <Shuffle className="h-3 w-3" /> 随机
                   </button>
                 </div>
@@ -699,11 +718,13 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
           )}
           </div>
         </div>
+      </section>
 
+      <section className="overflow-hidden rounded-card border border-border bg-surface">
         {/* 高级参数 (折叠) */}
-        <div className="border-b border-border/40">
-          <button type="button" onClick={() => setAdvancedOpen(v => !v)}
-            className="flex w-full items-center gap-2 px-5 py-3 text-left transition-colors hover:bg-elevated/30">
+        <div>
+          <button type="button" onClick={() => setAdvancedOpen(v => !v)} aria-expanded={advancedOpen}
+            className="flex w-full items-center gap-2 px-5 py-3.5 text-left transition-colors hover:bg-elevated/30 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-accent/60">
             <SectionHeader label="高级参数" inline />
             <ChevronDown className={`ml-auto h-3.5 w-3.5 text-muted transition-transform duration-200 ${advancedOpen ? 'rotate-180' : ''}`} />
           </button>
@@ -721,8 +742,11 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
             </div>
           )}
         </div>
+      </section>
 
-        {/* 页脚: 安全说明 + 操作 */}
+      {/* 操作卡: 安全说明 + 保存/清空 + 配置文件入口。
+          独立成卡让「保存」始终在视觉收尾处, 不必滚过长表单才找到。 */}
+      <section className="overflow-hidden rounded-card border border-border bg-surface">
         <div className="flex flex-col gap-3 px-5 py-4 sm:flex-row sm:items-center">
           <div className="flex min-w-0 items-start gap-2 sm:flex-1">
             <Shield className="mt-px h-3.5 w-3.5 shrink-0 text-muted/70" />
@@ -734,12 +758,12 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
           </div>
           <div className="flex shrink-0 gap-2">
             {configured && (
-              <button onClick={() => setConfirmClear(true)} disabled={clear.isPending} className="h-9 px-3.5 rounded-lg text-secondary hover:bg-danger/10 hover:text-danger text-sm flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors" title="Clear AI provider configuration">
+              <button onClick={() => setConfirmClear(true)} disabled={clear.isPending} className="h-9 px-3.5 rounded-lg text-secondary hover:bg-danger/10 hover:text-danger text-sm flex items-center justify-center gap-1.5 disabled:opacity-50 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-danger/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]" title="Clear AI provider configuration">
                 <Trash2 className="h-3.5 w-3.5" />
                 清空
               </button>
             )}
-            <button onClick={() => save.mutate()} disabled={save.isPending || !canSave} className="h-9 px-5 rounded-lg bg-accent text-white text-sm font-medium flex items-center justify-center gap-2 hover:bg-accent/90 disabled:opacity-40 transition-all">
+            <button onClick={() => save.mutate()} disabled={save.isPending || !canSave} className="h-9 px-5 rounded-lg bg-accent text-white text-sm font-medium flex items-center justify-center gap-2 hover:bg-accent/90 disabled:opacity-40 transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent/60 focus-visible:ring-offset-1 focus-visible:ring-offset-surface active:scale-[0.98]">
               {save.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : saved ? <Check className="h-4 w-4" /> : <Save className="h-4 w-4" />}
               {save.isPending ? '保存中...' : saved ? '已保存' : '保存配置'}
             </button>
@@ -774,6 +798,7 @@ export function SettingsAIPanel({ highlight }: { highlight?: string } = {}) {
           </div>
         )}
       </section>
+      </div>
       </AnchorWrap>
 
       {confirmClear && (
