@@ -152,6 +152,19 @@ async def _application_lifespan(app: FastAPI):
     capset = detect_capabilities()
     app.state.capabilities = capset
     logger.info("ready; %d capabilities active", len(capset.all()))
+    # 各能力的生效源与可用性: 切换数据源后一眼看出路由落点, 无需回设置页对照
+    try:
+        from app.data_providers.capabilities import resolve_capability_sources
+
+        for row in resolve_capability_sources():
+            logger.info(
+                "  能力路由 | %-8s ← %-12s %s",
+                row["label"],
+                row["source_display"],
+                "可用" if row["usable"] else "不可用",
+            )
+    except Exception as e:  # noqa: BLE001 — 仅日志, 失败不影响启动
+        logger.warning("能力路由日志输出失败: %s", e)
 
     # 全局行情服务
     qs = QuoteService()
