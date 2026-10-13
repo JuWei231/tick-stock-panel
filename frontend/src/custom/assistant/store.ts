@@ -58,6 +58,8 @@ interface AssistantState {
   activeId: string
   open: boolean
   sending: boolean
+  /** 悬浮球是否显示 (纯 UI 偏好, 独立 localStorage, 不随会话持久化) */
+  fabVisible: boolean
 }
 
 const STORAGE_KEY = 'assistant.sessions.v1'
@@ -67,11 +69,18 @@ const MAX_SESSIONS = 20
 const MAX_SESSION_MESSAGES = 200
 const MAX_INPUT_CHARS = 4000
 
+const FAB_STORAGE_KEY = 'assistant.fab.enabled'
+
+function loadFabVisible(): boolean {
+  try { return localStorage.getItem(FAB_STORAGE_KEY) !== '0' } catch { return true }
+}
+
 let state: AssistantState = {
   sessions: [],
   activeId: '',
   open: false,
   sending: false,
+  fabVisible: loadFabVisible(),
 }
 
 const listeners = new Set<() => void>()
@@ -370,6 +379,12 @@ export function openAssistant() {
 
 export function closeAssistant() {
   setState({ open: false }, false)
+}
+
+/** 设置悬浮球可见性并持久化 (默认开启)。 */
+export function setFabVisible(visible: boolean) {
+  try { localStorage.setItem(FAB_STORAGE_KEY, visible ? '1' : '0') } catch { /* 存储不可用仅内存态 */ }
+  setState({ fabVisible: visible }, false)
 }
 
 export function toggleAssistant() {

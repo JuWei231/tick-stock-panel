@@ -9,6 +9,10 @@ export interface FrontendSlotContextMap {
     collapsed: boolean
     pathname: string
   }
+  /** 侧栏头部快捷行 (数据源/AI 配置行下方) — 扩展注册快捷入口行, 行内自带顶部发丝线 */
+  'layout.header.quick': Record<string, never>
+  /** 设置→系统「界面」区尾部 — 扩展注册系统级开关行 (样式与核心 ToggleRow 同款) */
+  'settings.system.section': Record<string, never>
   /** 个股详情对话框底部扩展区 (日K/分时图表下方) */
   'stock-preview.footer': {
     symbol: string
