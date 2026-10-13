@@ -41,6 +41,7 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Download,
+  HardDriveDownload,
 } from 'lucide-react'
 import {
   IconDashboard,
@@ -171,6 +172,30 @@ function SidebarIndexQuotes({ rows, items }: { rows: IndexQuote[] | undefined; i
   )
 }
 
+// ===== 头部快捷行: 数据同步入口 (描边分段按钮, 与扩展快捷方式并排成组) =====
+// 点击直达 /data; 同步中转圈 / 刚完成绿勾, 空闲无角标保持安静。
+function QuickDataEntry({ syncing, justDone }: { syncing: boolean; justDone: boolean }) {
+  return (
+    <NavLink
+      to="/data"
+      title={syncing ? '数据同步中…' : '数据同步与画像'}
+      className={cn(
+        'group flex h-7 flex-1 items-center justify-center gap-1.5 rounded-md border transition-colors duration-150',
+        syncing
+          // 同步中: 主色呼吸光晕 — 与数据页「立即同步」按钮同一视觉语义
+          ? 'animate-breath-sync border-accent/50 bg-accent/10 text-accent'
+          : 'border-border/60 bg-elevated/25 text-secondary hover:border-border hover:bg-elevated hover:text-foreground',
+      )}
+    >
+      {syncing
+        ? <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+        : <HardDriveDownload className="h-3 w-3 shrink-0 text-muted transition-colors group-hover:text-foreground" />}
+      <span className="text-[11px] leading-none">数据</span>
+      {!syncing && justDone && <CheckCircle2 className="h-3 w-3 shrink-0 text-bull" />}
+    </NavLink>
+  )
+}
+
 // ===== 数据源能力健康卡 =====
 // 能力路由架构下的侧栏状态: 不再展示「主数据源 + TickFlow 档位」(单源时代遗留 —
 // 五个能力各自路由, 拿日K的源代表全局是随意的), 改为回答「各能力当前是否都有源在供」。
@@ -232,8 +257,7 @@ function DataSourceHealthBadge({ matrix }: { matrix: CapabilityMatrix | undefine
         onKeyDown={e => { if (e.key === 'Escape') setPopPos(null) }}
         className="group relative flex items-center gap-2 overflow-hidden rounded-md py-1.5 pl-2.5 pr-2 transition-colors duration-150 hover:bg-elevated/70"
       >
-        <span className="pointer-events-none absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-accent/50 transition-colors group-hover:bg-accent" />
-        <DatabaseZap className="h-3.5 w-3.5 shrink-0 text-muted group-hover:text-accent transition-colors" />
+        <DatabaseZap className="h-3.5 w-3.5 shrink-0 text-muted group-hover:text-foreground transition-colors" />
         {/* 能力方格 (按注册顺序: 实时/日K/分钟/除权/财务), 与悬浮卡逐格同色对应 */}
         <span className="flex items-center gap-1 shrink-0">
           {loading
@@ -316,8 +340,7 @@ function AIConfigBadge({ configured, model }: { configured?: boolean; model?: st
       className="group relative flex items-center gap-2 overflow-hidden rounded-md py-1.5 pl-2.5 pr-2 transition-colors duration-150 hover:bg-elevated/70"
       title={`AI 配置 — ${descText}`}
     >
-      <span className="pointer-events-none absolute inset-y-1.5 left-0 w-[2px] rounded-full bg-purple-400/50 transition-colors group-hover:bg-purple-400" />
-      <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted group-hover:text-purple-400 transition-colors" />
+      <Sparkles className="h-3.5 w-3.5 shrink-0 text-muted group-hover:text-foreground transition-colors" />
       {configured ? (
         <span className="min-w-0 flex-1 truncate text-[11px] font-medium text-secondary group-hover:text-foreground transition-colors">
           {model || '已接入模型'}
@@ -377,8 +400,9 @@ export function Layout() {
   // 持久化到 localStorage; 迁移旧两态键 tf-nav-collapsed (收起 → 图标条)。
   const [navState, setNavState] = useState<NavState>(() => {
     try {
+      // 两态导航: expanded(14rem) / rail(3.5rem 图标条)。历史三态版本的 'hidden' 归一为展开
       const v = localStorage.getItem('tf-nav-state')
-      if (v === 'expanded' || v === 'rail' || v === 'hidden') return v
+      if (v === 'expanded' || v === 'rail') return v
       return localStorage.getItem('tf-nav-collapsed') === '1' ? 'rail' : 'expanded'
     } catch { return 'expanded' }
   })
@@ -460,9 +484,9 @@ export function Layout() {
   // 开启实时行情时若存在排队中的挖掘任务 → 确认弹窗 (实时落盘会让排队任务开跑即失败)
   const [miningQueuedWarning, setMiningQueuedWarning] = useState<number | null>(null)
   const miningWarnBackdrop = useDialogBackdrop(() => setMiningQueuedWarning(null))
-  // 三态循环切换 (仅桌面): 展开 → 图标条 → 隐藏 → 展开
+  // 两态切换 (仅桌面): 展开 <-> 图标条
   const toggleNavCollapsed = () => {
-    setNavStatePersist(navState === 'expanded' ? 'rail' : navState === 'rail' ? 'hidden' : 'expanded')
+    setNavStatePersist(navState === 'expanded' ? 'rail' : 'expanded')
   }
   // 指数条: 固定核心四只 (产品契约, 不再可配置), 常驻显示
   const sidebarIndexes = CORE_INDEXES
@@ -538,15 +562,18 @@ export function Layout() {
 
   // 合并内置页面 + 可见的扩展分析菜单
   type NavIcon = (props: BrandIconProps) => ReactNode
-  type NavItem = { to: string; label: string; icon: NavIcon; badge?: string }
+  // arch: 'ext' = 扩展域页面 (官方扩展/自定义分析), 核心域 nav 常量不带标。
+  // 与菜单设置 ARCH_CLASS 同口径: nav 常量 8 项全部核心, 其余两个来源全部扩展。
+  type NavItem = { to: string; label: string; icon: NavIcon; badge?: string; arch?: 'core' | 'ext' }
   const analysisNav: NavItem[] = (analysisMenus?.items ?? [])
     .filter(m => m.visible)
-    .map(m => ({ to: `/analysis/${m.id}`, label: m.label, icon: m.icon === 'tags' ? Tags : BarChart3 }))
+    .map(m => ({ to: `/analysis/${m.id}`, label: m.label, icon: m.icon === 'tags' ? Tags : BarChart3, arch: 'ext' as const }))
   const extensionNav: NavItem[] = getFrontendExtensionNavigation().map(item => ({
     to: item.route.path,
     label: item.label,
     icon: item.icon,
     badge: item.badge,
+    arch: 'ext' as const,
   }))
 
   const allNav: NavItem[] = [...nav, ...analysisNav, ...extensionNav]
@@ -711,10 +738,7 @@ export function Layout() {
               style={{ color: BRAND }}
             />
             {!railMode && (
-              <div
-                className="font-bold text-[11px] uppercase tracking-[0.14em] text-foreground whitespace-nowrap"
-                style={{ textShadow: `0 0 10px ${BRAND}44` }}
-              >
+              <div className="font-semibold text-[11px] uppercase tracking-[0.12em] text-foreground/90 whitespace-nowrap">
                 Tick Stock Panel
               </div>
             )}
@@ -726,7 +750,7 @@ export function Layout() {
                   'flex items-center rounded-btn text-muted hover:text-foreground hover:bg-elevated/60 transition-colors duration-150 ease-smooth',
                   railMode ? 'justify-center p-1.5' : 'ml-auto p-1.5',
                 )}
-                title={railMode ? '隐藏菜单 (再点击左缘按钮可唤出)' : '收起菜单'}
+                title={railMode ? '展开菜单' : '收起菜单'}
               >
                 {railMode
                   ? <PanelLeft className="h-3.5 w-3.5 shrink-0" />
@@ -748,17 +772,22 @@ export function Layout() {
             {!railMode && (
               <div className="mt-2.5 border-t border-border/60 pt-1">
                 <DataSourceHealthBadge matrix={matrix} />
-              <div className="mx-2 border-t border-border/45" aria-hidden="true" />
+              <div className="mx-2 border-t border-border/60" aria-hidden="true" />
               <AIConfigBadge
                 configured={settingsState?.ai_configured ?? settingsState?.has_ai_key}
                 model={settingsState?.ai_model}
               />
+              {/* 快捷行: 数据 + 扩展快捷方式 (AI 助手) 一行两个半宽 chip */}
+              <div className="mx-2 mt-1 flex items-stretch gap-1 border-t border-border/45 pt-1">
+                <QuickDataEntry syncing={isDataSyncing} justDone={dataSyncJustDone} />
+                <ExtensionSlot name="layout.header.quick" context={{}} compact />
+              </div>
             </div>
           )}
         </div>
 
-        <nav className="flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-0.5">
-          {visibleNavItems.map(({ to, label, icon: Icon, badge }) => {
+        <nav className="tf-nav-scroll flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-0.5">
+          {visibleNavItems.map(({ to, label, icon: Icon, badge, arch }) => {
             // 「自选」项 — 开启分组侧栏且未整体收起时, 渲染为可展开父项 + 二级分组
             const isWatchlistExpandable = to === '/watchlist' && groupsInNav && !railMode && watchlistGroups.length > 0
             return (
@@ -776,8 +805,8 @@ export function Layout() {
                   >
                     <span
                       className={cn(
-                        'pointer-events-none absolute left-0 top-1/2 h-4 -translate-y-1/2 w-[2.5px] rounded-full bg-accent transition-opacity duration-150',
-                        location.pathname === '/watchlist' ? 'opacity-100 shadow-[0_0_8px_rgba(59,130,246,0.6)]' : 'opacity-0',
+                        'pointer-events-none absolute inset-y-1 left-0 w-[2px] rounded-full bg-accent transition-opacity duration-150',
+                        location.pathname === '/watchlist' ? 'opacity-100' : 'opacity-0',
                       )}
                     />
                     <Icon className={cn('h-4 w-4 shrink-0 transition-colors', location.pathname === '/watchlist' ? 'text-accent' : 'text-foreground/60 group-hover:text-foreground/85')} />
@@ -807,12 +836,24 @@ export function Layout() {
                         {/* active 左侧 accent 竖条指示 */}
                         <span
                           className={cn(
-                            'pointer-events-none absolute left-0 top-1/2 h-4 -translate-y-1/2 w-[2.5px] rounded-full bg-accent transition-opacity duration-150',
-                            isActive ? 'opacity-100 shadow-[0_0_8px_rgba(59,130,246,0.6)]' : 'opacity-0',
+                            'pointer-events-none absolute inset-y-1 left-0 w-[2px] rounded-full bg-accent transition-opacity duration-150',
+                            isActive ? 'opacity-100' : 'opacity-0',
                           )}
                         />
                         <Icon className={cn('h-4 w-4 shrink-0 transition-colors', isActive ? 'text-accent' : 'text-foreground/60 group-hover:text-foreground/85')} />
-                        {!railMode && <span className="flex-1">{label}</span>}
+                        {!railMode && (
+                          <span className="flex min-w-0 flex-1 items-center gap-1.5">
+                            <span className="truncate">{label}</span>
+                            {arch === 'ext' && (
+                              <span
+                                title="扩展域页面 — 可整体替换/移除而不伤核心"
+                                className="shrink-0 font-mono text-[8px] font-medium uppercase leading-none tracking-[0.08em] text-muted/70"
+                              >
+                                ext
+                              </span>
+                            )}
+                          </span>
+                        )}
                         {!railMode && badge && (
                           <span className="ml-auto inline-flex items-center rounded-full border border-amber-400/30 bg-amber-400/10 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-amber-400 shrink-0">
                             {badge}
@@ -1026,8 +1067,8 @@ export function Layout() {
                 <>
                   <span
                     className={cn(
-                      'pointer-events-none absolute left-0 top-1/2 h-4 -translate-y-1/2 w-[2.5px] rounded-full bg-accent transition-opacity duration-150',
-                      isActive ? 'opacity-100 shadow-[0_0_8px_rgba(59,130,246,0.6)]' : 'opacity-0',
+                      'pointer-events-none absolute inset-y-1 left-0 w-[2px] rounded-full bg-accent transition-opacity duration-150',
+                      isActive ? 'opacity-100' : 'opacity-0',
                     )}
                   />
                   <Settings className={cn('h-4 w-4 shrink-0 transition-colors', isActive ? 'text-accent' : 'text-foreground/60 group-hover:text-foreground/85')} />
@@ -1043,13 +1084,13 @@ export function Layout() {
                           onClick={(e) => {
                             e.preventDefault()
                             e.stopPropagation()
-                            navigate('/settings?tab=system&autoupdate=1')
+                            navigate('/settings?tab=about&autoupdate=1')
                           }}
                           onKeyDown={(e) => {
                             if (e.key === 'Enter' || e.key === ' ') {
                               e.preventDefault()
                               e.stopPropagation()
-                              navigate('/settings?tab=system&autoupdate=1')
+                              navigate('/settings?tab=about&autoupdate=1')
                             }
                           }}
                           className="inline-flex cursor-pointer text-amber-400 transition-transform hover:scale-110 animate-breath"

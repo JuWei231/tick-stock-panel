@@ -104,7 +104,7 @@ function SortableItem({ entry, hidden, onToggleHidden, badgeEnabled, onToggleBad
     <div
       ref={setNodeRef}
       style={style}
-      className={`grid grid-cols-[2.5rem_1fr_4.5rem_3rem_3rem_3rem] items-center border-b border-border/70 px-4 py-3 last:border-b-0 ${
+      className={`group grid grid-cols-[2.5rem_1fr_4.5rem_3rem_3rem_3rem] items-center border-b border-border/60 px-4 py-2.5 transition-colors last:border-b-0 hover:bg-elevated/40 ${
         isDragging ? 'bg-elevated rounded-lg shadow-lg' : ''
       } ${hidden ? 'opacity-50' : ''}`}
     >
@@ -124,13 +124,11 @@ function SortableItem({ entry, hidden, onToggleHidden, badgeEnabled, onToggleBad
           return (
             <span
               title={arch.reason}
-              className={`shrink-0 cursor-help rounded px-1 py-px text-[9px] leading-4 ${
-                arch.kind === 'core'
-                  ? 'bg-accent/10 text-accent'
-                  : 'border border-border text-muted'
+              className={`shrink-0 cursor-help font-mono text-[9px] font-medium uppercase leading-4 tracking-[0.08em] ${
+                arch.kind === 'core' ? 'text-accent' : 'text-muted/80'
               }`}
             >
-              {arch.kind === 'core' ? '核心' : '扩展'}
+              {arch.kind === 'core' ? 'core' : 'ext'}
             </span>
           )
         })()}
@@ -140,8 +138,8 @@ function SortableItem({ entry, hidden, onToggleHidden, badgeEnabled, onToggleBad
         <span className="truncate text-[11px] text-muted font-mono">{entry.id}</span>
       </div>
       <div>
-        <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-[11px] ${
-          entry.type === 'analysis' ? 'bg-accent/10 text-accent' : 'bg-elevated text-muted'
+        <span className={`text-[11px] font-medium ${
+          entry.type === 'analysis' ? 'text-accent' : 'text-muted'
         }`}>
           {entry.type === 'builtin' ? '内置' : entry.type === 'analysis' ? '自定义' : '扩展'}
         </span>
@@ -362,9 +360,9 @@ export function SettingsMenuSettingsPanel() {
       </section>
 
       <section className="rounded-card border border-border bg-surface overflow-hidden">
-        <div className="grid grid-cols-[2.5rem_1fr_4.5rem_3rem_3rem_3rem] items-center border-b border-border px-4 py-2 text-[11px] text-muted">
+        <div className="grid grid-cols-[2.5rem_1fr_4.5rem_3rem_3rem_3rem] items-center border-b border-border bg-elevated/40 px-4 py-1.5 text-[10px] font-medium uppercase tracking-[0.06em] text-muted">
           <div />
-          <div>菜单</div>
+          <div>菜单 · 归属</div>
           <div>类型</div>
           <div className="text-center">显示</div>
           <div className="text-center">设置</div>

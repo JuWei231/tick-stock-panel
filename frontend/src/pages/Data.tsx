@@ -68,6 +68,8 @@ export function Data() {
 
   const caps = useCapabilities()
   const settings = useSettings()
+  // 测试端点仅探测 TickFlow 通道 — 未配置 TickFlow Key 时隐藏入口
+  const hasTickflowKey = settings.data?.has_tickflow_key ?? settings.data?.mode === 'api_key'
 
   const status = useDataStatus({
     refetchInterval: (query) => {
@@ -649,6 +651,7 @@ export function Data() {
                 <Plus className="h-3.5 w-3.5" />
                 扩展数据
               </button>
+              {hasTickflowKey && (
               <button
                 onClick={() => setShowEndpointTest(true)}
                 className="inline-flex items-center gap-1 px-2 py-1 rounded-btn text-secondary hover:text-accent hover:bg-accent/8 text-xs transition-colors duration-150"
@@ -656,6 +659,7 @@ export function Data() {
                 <Wifi className="h-3.5 w-3.5" />
                 测试端点
               </button>
+              )}
               <button
                 onClick={() => setOpenSettings('page-settings')}
                 className="inline-flex items-center gap-1 px-2 py-1 rounded-btn text-secondary hover:text-accent hover:bg-accent/8 text-xs transition-colors duration-150"
