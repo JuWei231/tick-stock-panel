@@ -93,6 +93,7 @@ def _make_source_lib(root: Path) -> Path:
     src.mkdir()
     (src / "TdxAiData.dll").write_bytes(b"FAKE_DLL_BYTES")
     (src / "libTdxAiData.so").write_bytes(b"FAKE_SO_BYTES")
+    (src / "libTdxAiData.dylib").write_bytes(b"FAKE_DYLIB_BYTES")  # macOS
     (src / "TdxAiData.ini").write_text(
         "[TcHqHost]\nHostNum=2\nPrimaryHost=0\n\n[Token]\ntoken=OLD\n", encoding="utf-8"
     )
@@ -104,8 +105,8 @@ def test_materialize_lib_writes_token_into_both_ini(tmp_path):
     src = _make_source_lib(tmp_path)
     lib_root = tmp_path / "tdxquant_lib"
     dll = tc.materialize_lib("TDX-NEW-KEY", lib_root, source=src)
-    assert dll.name in ("TdxAiData.dll", "libTdxAiData.so")
-    assert (lib_root / "TdxAiData.dll").exists()
+    assert dll.name == tc.LIB_DLL_NAME
+    assert (lib_root / tc.LIB_DLL_NAME).exists()
     for ini_name in ("TdxAiData.ini", "user.ini"):
         text = (lib_root / ini_name).read_text(encoding="utf-8")
         assert "token=TDX-NEW-KEY" in text
