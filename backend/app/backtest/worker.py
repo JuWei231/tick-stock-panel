@@ -86,9 +86,6 @@ def _strategy_dirs(data_dir: Path) -> list[Path]:
     app_dir = Path(__file__).resolve().parents[1]
     return [
         app_dir / "strategy" / "research",
-        # 必须与 main.py 的 strategy_dirs 一致: 少扫 builtin 会让回测子进程
-        # 报 unknown strategy (见 tests/backtest/test_composite_backtest_e2e.py)。
-        app_dir / "strategy" / "builtin",
         data_dir / "strategies" / "custom",
         data_dir / "strategies" / "ai",
         data_dir / "strategies" / "composite",
