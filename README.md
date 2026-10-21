@@ -32,7 +32,7 @@
 <td align="center"><big><b>1 容器</b></big><br/><sub>零外部数据库</sub></td></tr>
 </table>
 
-**[✨ 核心功能](#-核心功能)** · **[📸 界面预览](#-界面预览)** · **[🏛️ 架构](#-架构)** · **[⚡ 性能](#-性能)** · **[🌐 开放能力](#-开放能力open-api--mcp)** · **[🚀 快速开始](#-快速开始)** · **[📚 完整文档](#-完整文档)**
+**[✨ 核心功能](#-核心功能)** · **[📸 界面预览](#-界面预览)** · **[🏛️ 架构](#%EF%B8%8F-架构)** · **[⚡ 性能](#-性能)** · **[🌐 开放能力](#-开放能力open-api--mcp)** · **[🚀 快速开始](#-快速开始)** · **[📚 完整文档](#-完整文档)** · **[💬 交流群](#%EF%B8%8F-支持与交流)**
 
 </div>
 
@@ -50,7 +50,7 @@
   <img src="docs/sponsors/runninghub-intro-card.svg?v=4" alt="About RunningHub API — 产品介绍" width="100%">
 </a>
 
-**本项目由 [RunningHub](https://www.runninghub.ai/call-api?source=github&inviteCode=edt5wh7c) 提供支持** · 单一接口直连 400+ 主流大模型 · [DeepSeek v4.1 Flash 6 折](https://www.runninghub.ai/call-api?source=github&inviteCode=edt5wh7c) · 免费测试
+**本项目由 [RunningHub](https://www.runninghub.ai/call-api?source=github&inviteCode=edt5wh7c) 提供支持** · 单一接口直连 400+ 主流大模型 · [DeepSeek v4.1 Flash 3-6 折](https://www.runninghub.ai/call-api?source=github&inviteCode=edt5wh7c) · 免费测试
 
 </div>
 
@@ -59,7 +59,7 @@
 > [!IMPORTANT]
 > ⚠️ 本项目谨作为本地量化提供解决思路与方案，**不作为投资软件或者看盘软件**。**明确不做**：不对标同花顺 / 通达信，不内置「AI 荐股 / 涨停预测」。数据源已插件化，可任意接入第三方数据源。仅供学习研究使用。
 
-📮 有任何项目问题可邮件联系 **415333856@qq.com** · 觉得有用请点个 ⭐ Star
+📮 有任何项目问题可邮件联系 **shy3130@qq.com** · 觉得有用请点个 ⭐ Star
 
 ---
 
@@ -170,7 +170,7 @@
 </td>
 <td width="33.3%" valign="top">
 
-**📦 页面包**<br/>页面打包产物上传即挂载, 免重建宿主, 刷新生效
+**📦 页面插件**<br/>页面打包产物上传即挂载, 免重建宿主, 刷新生效
 
 </td>
 <td width="33.3%" valign="top">
@@ -181,7 +181,7 @@
 </tr>
 </table>
 
-> 📄 **19 个页面的完整功能细节**见 [docs/features.md](./docs/features.md) 与 [screenshots/](./screenshots/README.md) —— 上表之外, 回测四种研究视图、异动三时间线、页面包运行时分发等都在其中。
+> 📄 **19 个页面的完整功能细节**见 [docs/features.md](./docs/features.md) 与 [screenshots/](./screenshots/README.md) —— 上表之外, 回测四种研究视图、异动三时间线、页面插件运行时分发等都在其中。
 
 ---
 
@@ -257,9 +257,9 @@
 |                     | 内容                                                                                                                   | 划线依据                                  |
 | :------------------ | :--------------------------------------------------------------------------------------------------------------------- | :---------------------------------------- |
 | **核心域 · 8**      | 数据底座 / 能力路由 / 订阅锚点(自选) / 策略与回测 / 因子与挖掘 / 环境数据生产 / 监控推送管道 / 扩展数据存储 + 认证配置 | 被多个模块消费其数据与语义,自身不依赖外围 |
-| **扩展域 · 5 通道** | 数据源插件 · 扩展数据表 · 自定义策略/信号 · 页面扩展(单文件源码 + 运行时页面包) · 后端 custom 模块                       | 只消费核心契约,可整体替换/移除而不伤核心  |
+| **扩展域 · 5 通道** | 数据源插件 · 扩展数据表 · 自定义策略/信号 · 页面扩展(单文件源码 + 运行时页面插件) · 后端 custom 模块                       | 只消费核心契约,可整体替换/移除而不伤核心  |
 
-设置 → 菜单设置里每个页面带 `核心 / 扩展` 架构徽标与 `内置 / 自定义 / 扩展` 类型徽标;11 个官方页面(概念/行业/个股/财务分析、监控中心、异动、持仓提醒、模拟盘、信号库、复盘、连板梯队)已全部落地为 `frontend/src/custom/<ns>/extension.tsx` **单文件扩展** —— 删除目录即卸载、复制目录即导入;例如监控中心页面可换,规则引擎与推送管道属核心照常运行。新装默认隐藏这些扩展页面(菜单设置一键开启),老用户升级自动保持原菜单位置与排序。免宿主重建的运行时分发走**页面包**(设置 → 页面包,契约见 [docs/page-sdk.md](./docs/page-sdk.md))。详见 [docs/open-platform-plan.md](./docs/open-platform-plan.md)。
+设置 → 菜单设置里每个页面带 `核心 / 扩展` 架构徽标与 `内置 / 自定义 / 扩展` 类型徽标;11 个官方页面(概念/行业/个股/财务分析、监控中心、异动、持仓提醒、模拟盘、信号库、复盘、连板梯队)已全部落地为 `frontend/src/custom/<ns>/extension.tsx` **单文件扩展** —— 删除目录即卸载、复制目录即导入;例如监控中心页面可换,规则引擎与推送管道属核心照常运行。新装默认隐藏这些扩展页面(菜单设置一键开启),老用户升级自动保持原菜单位置与排序。免宿主重建的运行时分发走**页面插件**(设置 → 页面插件,契约见 [docs/page-sdk.md](./docs/page-sdk.md))。详见 [docs/open-platform-plan.md](./docs/open-platform-plan.md)。
 
 ### 关键机制
 
@@ -272,7 +272,7 @@
 | **开放网关**         | Token 通道与面板密码会话并行互不影响:网络门禁(默认仅本机/内网, `API_TOKEN_LOCAL_ONLY=0` 放开) → 认证 → 六档 scope 校验 → 每 Token 滑动窗口限流(默认 120 次/分,O(1) 内存)→ 放行;管理面(数据同步/表结构/设置)永不开放给 Token                                                         |
 | **事件总线**         | 进程内发布/订阅(慢消费者丢旧保新,广播失败不反噬主流程),告警落盘唯一入口已挂接;SSE 流按票据 scope 过滤,票据一次性 60 秒过期                                                                                               |
 | **交易日探针**       | fuyao 交易日历(确定性,含调休)→ tickflow 全市场行情时间戳探针(OR 语义)→ 工作日兜底;节假日自动停掉实时轮询与分钟增量,零无效请求                                                                                            |
-| **扩展自动发现**     | 后端 `app/custom/<包>/` 启动时自动发现、注册独立路由(版本不符或 setup 失败即隔离跳过);前端 `src/custom/<ns>/extension.tsx` 单文件即完整扩展(组件+路由+导航),构建时自动挂载 —— 删除目录即整体卸载、复制目录即导入;运行时分发走**页面包**(上传即挂载,免重建宿主) |
+| **扩展自动发现**     | 后端 `app/custom/<包>/` 启动时自动发现、注册独立路由(版本不符或 setup 失败即隔离跳过);前端 `src/custom/<ns>/extension.tsx` 单文件即完整扩展(组件+路由+导航),构建时自动挂载 —— 删除目录即整体卸载、复制目录即导入;运行时分发走**页面插件**(上传即挂载,免重建宿主) |
 
 ### 技术栈
 
@@ -306,7 +306,8 @@
 
 > 开放层的性能(网关裁决 O(1)、契约快照守护、亚秒级事件推送等)见下方[开放能力](#-开放能力open-api--mcp)章节。
 
------------ | :---------------------------------- | :----------------------------------------- |
+| 能力         | 表现                               | 靠什么                                       |
+| :----------- | :-------------------------------- | :------------------------------------------ |
 | 开放 API     | **65 端点** · 每 Token 120 次/分    | 进程内滑动窗口限流,O(1) 内存,零外部依赖    |
 | 网关裁决     | 认证→scope→限流,纯内存单函数完成    | 单一裁决点(`evaluate`),无数据库往返        |
 | 契约稳定性   | 机器可读契约 + **快照测试**守护     | 开放面增删必须显式改快照,CI 拦截无意识变更 |
@@ -483,6 +484,19 @@ cp .env.example .env       # 按需填 TICKFLOW_API_KEY(留空 = None 模式)
 
 自动检查 / 下载依赖、释放端口、同时起前后端。后端 → <http://localhost:3018> · 前端 → <http://localhost:3011>。
 
+Windows 启动器的可用参数:
+
+```powershell
+.\dev.ps1                  # 开发模式, 后端文件变更自动重载
+.\dev.ps1 -NoReload        # 内测/长时间运行: 不启用 --reload, 不会反复全量预热
+.\dev.ps1 -Force           # 已有同端口实例时先结束它再启动
+.\dev.ps1 -BackendPort 8000 -FrontendPort 5173
+```
+
+- **停止请用 Ctrl-C**,不要点窗口右上角的 X —— 只有 Ctrl-C 会走到清理逻辑,结束整棵进程树。
+- 子进程输出重定向到 `data/logs/{backend,frontend}.{out,err}.log`,启动器本身只做有界 tail,内存占用恒定。排查问题优先看这几个文件,后端的 `data/backend.log` 仍会单独轮转。
+- 启动前会检测同端口是否已有本项目后端:有则直接拒绝启动并打印 PID,避免多开叠加内存(每个实例常驻 1GB 以上)。换端口调试的实例不会被误杀。
+
 ### 方式 E:桌面客户端(Windows / macOS)
 
 从 [Releases](https://github.com/shy3130/tick-stock-panel/releases/latest) 下载对应安装包:Windows 双击 `TSP-Setup-x64-*.exe` 按向导安装即可;macOS 下载 `TSP-macos-arm64-*.dmg`。
@@ -503,6 +517,41 @@ xattr -dr com.apple.quarantine /Applications/TSP.app
 
 </details>
 
+### 内存占用与低配机器
+
+后端启动后会在内存里保留一份完整的 enriched 历史宽表(指标 + 扩展数据列),供策略扫描、监控和回测直接复用,这是主要的内存来源。实测(243 个交易日、约 108 万行、105 列):
+
+| 场景 | 常驻内存 | 启动预热峰值 |
+| :-- | --: | --: |
+| 默认配置(按 CPU 核数并行) | ~1.3 GB | ~1.5–1.8 GB |
+| `POLARS_MAX_THREADS=2` | ~0.8 GB | ~1.2 GB |
+
+给出的是 macOS arm64 实测值。Windows 的内存工作集通常比 macOS 的 RSS 更"实",同一数据量下数值接近或略高;Polars 释放的页不会立即归还系统,所以监控里看到的是历史高水位而不是实时占用。
+
+**2 GB 内存的服务器/小主机建议:**
+
+```ini
+# .env
+POLARS_MAX_THREADS=2        # 主要收益项: 用约 40% 的构建耗时换 500MB 内存
+```
+
+```yaml
+# docker-compose.yml 的 app 服务
+    mem_limit: 1500m
+    memswap_limit: 3g         # 留 swap 缓冲, 避免偶发峰值直接触发 OOM kill
+```
+
+- **不要在 2 GB 机器上跑回测/参数优化/因子挖掘**:这类任务会另起独立 worker 进程并重新加载整套后端,单个约 800 MB,与主进程叠加必然超出。
+- **不要多开实例**:每个后端实例都会各自构建一份历史缓存。重复运行启动脚本会叠加占用,Windows 可用下面的命令确认是否只有一个:
+
+  ```powershell
+  Get-CimInstance Win32_Process |
+    Where-Object { $_.CommandLine -like '*uvicorn*app.main:app*' } |
+    Select-Object ProcessId, ParentProcessId, CommandLine
+  ```
+
+- **确认预热规模**:`data/backend.log` 中的 `enriched 历史缓存: N rows` 表示本次预热实际载入的行数,N 越大占用越高。历史数据较少时(例如首次只同步了几十天)内存会明显低于上表。
+
 ### 跑起来后的第一次使用
 
 1. **设置 → 凭据与能力** → 点 **重新检测**,确认档位标签与能力路由矩阵
@@ -512,7 +561,7 @@ xattr -dr com.apple.quarantine /Applications/TSP.app
 5. **监控中心**配规则,盘中实时弹窗 + 持久化记录;**异动监控**覆盖竞价/盘中/偏移全时段
 6. 配好 AI Key 后,**悬浮球 / ⌘K** 呼出 **AI 对话助手**,直接问「今天市场怎么样」「我的自选表现如何」「我的扩展数据表里有什么」,或让它「生成一个放量站上 20 日线的信号」「检查一下数据完整性」——写操作会先弹确认卡, 你点确认才执行
 7. 想接自己的程序?**设置 → 开放接口**建个 Token,照着 [examples/open-api](./examples/open-api/README.md) 十分钟跑通第一个脚本;AI 玩家直接配 [MCP](./mcp-server/README.md)
-8. 想定制页面?核心之外 11 个官方页面都是单文件扩展(新装默认隐藏,在**设置 → 菜单设置**开启);自己开发的页面用 [frontend/page-pack-template](./frontend/page-pack-template) 打包,经**设置 → 页面包**上传即用,宿主无需重建
+8. 想定制页面?核心之外 11 个官方页面都是单文件扩展(新装默认隐藏,在**设置 → 菜单设置**开启);自己开发的页面用 [frontend/page-pack-template](./frontend/page-pack-template) 打包,经**设置 → 页面插件**上传即用,宿主无需重建
 
 ---
 
@@ -542,7 +591,8 @@ PORT=3018                      # 服务端口
 | **v0.3**              | 能力路由矩阵 · fuyao 数据源(财务/龙虎榜/风向标) · 分钟策略与回测 · 交易日探针 · 全时段异动中心 · 回测导出与候选复测                | ✅            |
 | **AI 助手**           | 对话式数据问答与操作: 21 查询 + 4 动作工具(确认卡放行, 含生成信号/回测/加自选/数据补全) · 逐字流式 + 工具足迹卡 · 完全解耦扩展模块 | ✅            |
 | **v0.3.2 开放能力版** | API Token + 六档 scope 网关 · 61 端点契约(快照+CI 守护) · 扩展数据读写闭环 · SSE 事件流 · MCP 服务器 · 核心/扩展域边界标注         | ✅            |
-| **v0.3.6**            | [TdxQuant](https://help.tdx.com.cn/quant/) 数据源(realtime/五档/日K/复权/分钟) · 11 官方页面单文件扩展化 + 运行时页面包 · 扩展表两级拉取配方(概念/行业出厂即用) · AI Responses 协议与会话跨设备 · 情绪评分口径可配置 · 财务画像手动拉取 · 策略池叠加分组 · 65 端点契约 | 🚧          |
+| **v0.3.6**            | [TdxQuant](https://help.tdx.com.cn/quant/) 数据源(realtime/五档/日K/复权/分钟) · 11 官方页面单文件扩展化 + 运行时页面插件 · 扩展表两级拉取配方(概念/行业出厂即用) · AI Responses 协议与会话跨设备 · 情绪评分口径可配置 · 财务画像手动拉取 · 策略池叠加分组 · 65 端点契约 | 🚧          |
+| **v0.3.7**            | 模拟盘重构(多账户对比·策略自动执行) · 桌面修复(TdxQuant Key 探测·macOS 数据目录移出 .app 包) · 界面缩放 transform scale 修复 · 策略安全校验加固(GH #475) · 68 端点契约 | 🚧          |
 
 ---
 
@@ -563,7 +613,7 @@ PORT=3018                      # 服务端口
 | [docs/market-phase.md](./docs/market-phase.md)                                                     | 市场情绪周期 6 阶段与概念/行业主线识别的口径与设计                   |
 | [docs/plugin-development.md](./docs/plugin-development.md)                                         | 数据源插件开发规范(以 fuyao 为参考实现)                  |
 | [docs/secondary-development.md](./docs/secondary-development.md)                                   | 代码二次开发、前端插槽、后端策略接口与 AI 开发模板                   |
-| [docs/page-sdk.md](./docs/page-sdk.md)                                                             | 页面包开发指南:产物契约、能力桥 ctx、打包与上传、安全边界           |
+| [docs/page-sdk.md](./docs/page-sdk.md)                                                             | 页面插件开发指南:产物契约、能力桥 ctx、打包与上传、安全边界           |
 | [backend/app/strategy/prompts/strategy-guide.md](./backend/app/strategy/prompts/strategy-guide.md) | 策略开发完整规范(AI 生成与手写)                                      |
 
 ---
