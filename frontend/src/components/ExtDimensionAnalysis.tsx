@@ -1,5 +1,5 @@
 import { useMemo, useState, type ComponentType } from 'react'
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useQuery } from '@tanstack/react-query'
 import {
   BarChart3,
   CalendarDays,
@@ -11,7 +11,6 @@ import {
   Users,
 } from 'lucide-react'
 import { PageHeader } from '@/components/PageHeader'
-import { PresetFetchState } from '@/components/analysis-shared'
 import { api, type AnalysisColumn, type ExtDataConfig, type ExtDataField } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 
@@ -193,20 +192,6 @@ export function ExtDimensionAnalysis({
   })
 
   const rows = rowsQuery.data?.rows ?? []
-  const queryClient = useQueryClient()
-  // 内置榜单菜单 (如人气排行/资金流向) 指向内置预设: 出厂不带数据, 且预设
-  // pull.enabled=False 不会自动拉取 (#199), 所以这里给一个手动获取入口。
-  const isBuiltinPresetMenu = menu?.builtin === true
-  const presetFetch = useMutation({
-    mutationFn: () => api.extDataPresetFetch(activeConfigId),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: QK.extData })
-      queryClient.invalidateQueries({ queryKey: QK.extDataRows(activeConfigId, undefined, PAGE_LIMIT, columnsKey) })
-    },
-  })
-  const needsPresetFetch =
-    isBuiltinPresetMenu && !!activeConfigId &&
-    !rowsQuery.isLoading && rows.length === 0
   const baseFields = activeConfig?.fields ?? rowsQuery.data?.fields ?? []
   const fields = rows.some(r => r.name != null) && !baseFields.some(f => f.name === 'name')
     ? [...baseFields, { name: 'name', dtype: 'string', label: '名称' }]
@@ -325,16 +310,6 @@ export function ExtDimensionAnalysis({
             <Database className="mx-auto h-8 w-8 text-muted" />
             <div className="mt-3 text-sm text-secondary">{emptyHint}</div>
             <div className="mt-1 text-xs text-muted">请先在“数据”页面新增扩展数据，并在“扩展分析”中创建分析菜单。</div>
-          </div>
-        ) : needsPresetFetch ? (
-          <div className="rounded-card border border-border bg-surface">
-            <PresetFetchState
-              title={`未获取${activeTitle}数据`}
-              hint={`内置数据源「${activeConfig.label}」已就绪, 点击下方按钮从上游接口获取最新快照`}
-              isLoading={presetFetch.isPending}
-              error={presetFetch.error}
-              onFetch={() => presetFetch.mutate()}
-            />
           </div>
         ) : (
           <>

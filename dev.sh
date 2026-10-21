@@ -133,30 +133,9 @@ if [ ! -d "$BACKEND_DIR/.venv" ] || [ "${#BACKEND_EXTRA_ARGS[@]}" -gt 0 ]; then
   ok "后端依赖装好了"
 fi
 
-# pnpm 把安装时的锁文件副本留在 node_modules/.pnpm/lock.yaml。仅判断 node_modules
-# 是否存在会漏掉「拉到已改依赖的提交、但旧 node_modules 还在」的情况, 此时 Vite 会以
-# "imported but could not be resolved" 启动失败。副本与仓库锁文件不一致就重装。
-frontend_deps_outdated() {
-  local lock_file="$FRONTEND_DIR/pnpm-lock.yaml"
-  local installed_lock="$FRONTEND_DIR/node_modules/.pnpm/lock.yaml"
-  # 缺少任一锁文件时不判定过期: 交给 pnpm install 自己解析。
-  [ -f "$lock_file" ] && [ -f "$installed_lock" ] || return 1
-  # 去掉 CR 再比较: Windows 检出可能是 CRLF, 而 pnpm 写出的副本是 LF。
-  ! diff -q <(tr -d '\r' <"$lock_file") <(tr -d '\r' <"$installed_lock") >/dev/null 2>&1
-}
-
-frontend_deps_install=false
 if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
   info "前端首次启动 — 安装 Node 依赖..."
-  frontend_deps_install=true
-elif frontend_deps_outdated; then
-  info "前端依赖已变更 — 同步 Node 依赖..."
-  frontend_deps_install=true
-fi
-
-if [ "$frontend_deps_install" = true ]; then
-  # --frozen-lockfile 与后端 uv sync --frozen 一致: 装锁文件里钉住的版本, 不静默改写锁文件。
-  ( cd "$FRONTEND_DIR" && pnpm install --frozen-lockfile )
+  ( cd "$FRONTEND_DIR" && pnpm install )
   ok "前端依赖装好了"
 fi
 

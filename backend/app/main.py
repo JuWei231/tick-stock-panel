@@ -280,6 +280,9 @@ async def _application_lifespan(app: FastAPI):
     _etf_screener_svc = ScreenerService(repo, asset_type="etf")
     strategy_dirs = [
         Path(__file__).resolve().parent / "strategy" / "research",
+        # 本仓库随代码发布的公共策略仍放 strategy/builtin。上游去内置化后只扫
+        # data/strategies/*, 会让这些策略从策略页消失, 故保留代码目录扫描。
+        Path(__file__).resolve().parent / "strategy" / "builtin",
         store.data_dir / "strategies" / "custom",
         store.data_dir / "strategies" / "ai",
         store.data_dir / "strategies" / "composite",
